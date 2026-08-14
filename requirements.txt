@@ -2,23 +2,18 @@
 Flask>=3.0,<4.0
 
 # Explicitly pinned because the app imports werkzeug.security directly.
-# Flask also depends on Werkzeug, but listing it here makes the direct
-# dependency clear and helps avoid unexpected major-version changes.
 Werkzeug>=3.0,<4.0
+
+# Development/testing
+pytest>=8.0,<9.0
 
 # ---------------------------------------------------------------------------
 # Optional production server
 # ---------------------------------------------------------------------------
 # Do not use Flask's built-in development server in production.
-# Choose one production WSGI server.
-
+#
 # Cross-platform production server:
 # waitress>=3.0,<4.0
-
+#
 # Common Linux/macOS production server:
 # gunicorn>=22.0,<23.0
-
-# ---------------------------------------------------------------------------
-# Optional development/testing dependencies
-# ---------------------------------------------------------------------------
-# pytest>=8.0,<9.0
