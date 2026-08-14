@@ -3,17 +3,16 @@
 FamilyFinance — Personal & Family Budget Tracker (Enhanced Edition)
 
 Run locally:
-    pip install flask
+    pip install -r requirements.txt
     python app.py
 
 Default behavior:
-    - If FF_ADMIN_PASS is not set, a one-time admin password is generated
-      and printed to the console on first startup.
-    - For production, set FF_SECRET_KEY and FF_ADMIN_PASS.
+- If FF_ADMIN_PASS is not set, a one-time admin password is generated
+  and printed to the console on first startup.
+- For production, set FF_SECRET_KEY and FF_ADMIN_PASS.
 
-This implementation focuses on a secure, maintainable backend.
-If you have a frontend template at templates/index.html, it will be used.
-Otherwise, a minimal API home page is rendered.
+This implementation is API-first. If templates/index.html exists, it is served
+at "/". Otherwise, a minimal API landing page is rendered.
 """
 
 from flask import (
@@ -28,6 +27,7 @@ from flask import (
     render_template_string,
     send_file,
 )
+
 import sqlite3
 import json
 import csv
@@ -40,6 +40,9 @@ import time
 import logging
 import tempfile
 import calendar
+import threading
+import hmac
+
 from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
@@ -49,7 +52,6 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 
 BASE_DIR = Path(__file__).parent
-RATE_STORE = {}
 
 BILL_STATUSES = {"Pending", "Partially Paid", "Paid", "Void"}
 ASSET_ACCOUNT_TYPES = {"Checking", "Savings", "Cash", "Investment", "Other"}
@@ -57,24 +59,53 @@ LIABILITY_ACCOUNT_TYPES = {"Credit Card", "Loan"}
 ACCOUNT_TYPES = ASSET_ACCOUNT_TYPES | LIABILITY_ACCOUNT_TYPES
 
 EXPENSE_CATEGORIES = [
-    "Groceries & Food", "Housing & Rent", "Utilities", "Transportation",
-    "Healthcare & Medical", "Education", "Entertainment & Fun", "Dining Out",
-    "Clothing & Shopping", "Personal Care", "Insurance", "Subscriptions",
-    "Debt Payments", "Gifts & Donations", "Pet Care", "Travel & Vacation",
-    "Kids & Family", "Home Maintenance", "Savings & Investments", "Other",
+    "Groceries & Food",
+    "Housing & Rent",
+    "Utilities",
+    "Transportation",
+    "Healthcare & Medical",
+    "Education",
+    "Entertainment & Fun",
+    "Dining Out",
+    "Clothing & Shopping",
+    "Personal Care",
+    "Insurance",
+    "Subscriptions",
+    "Debt Payments",
+    "Gifts & Donations",
+    "Pet Care",
+    "Travel & Vacation",
+    "Kids & Family",
+    "Home Maintenance",
+    "Savings & Investments",
+    "Other",
 ]
 
 INCOME_CATEGORIES = [
-    "Salary / Wages", "Freelance / Gig Work", "Business Income",
-    "Investments & Dividends", "Rental Income", "Government Benefits",
-    "Gift / Inheritance", "Tax Refund", "Other",
+    "Salary / Wages",
+    "Freelance / Gig Work",
+    "Business Income",
+    "Investments & Dividends",
+    "Rental Income",
+    "Government Benefits",
+    "Gift / Inheritance",
+    "Tax Refund",
+    "Other",
 ]
 
 BILL_CATEGORIES = [
-    "Mortgage / Rent", "Electricity", "Water & Sewage", "Gas / Heating",
-    "Internet & Cable", "Phone / Mobile", "Insurance Premium",
-    "Subscription Service", "Credit Card Payment", "Loan Repayment",
-    "School / Tuition Fees", "Other",
+    "Mortgage / Rent",
+    "Electricity",
+    "Water & Sewage",
+    "Gas / Heating",
+    "Internet & Cable",
+    "Phone / Mobile",
+    "Insurance Premium",
+    "Subscription Service",
+    "Credit Card Payment",
+    "Loan Repayment",
+    "School / Tuition Fees",
+    "Other",
 ]
 
 DEFAULT_SETTINGS = {
@@ -317,9 +348,24 @@ MINIMAL_INDEX = """
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>FamilyFinance API</title>
   <style>
-    body { font-family: system-ui, sans-serif; margin: 40px auto; max-width: 900px; line-height: 1.6; padding: 0 16px; }
-    code { background: #f1f5f9; padding: 2px 6px; border-radius: 6px; }
-    .card { border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; margin: 16px 0; }
+    body {
+      font-family: system-ui, sans-serif;
+      margin: 40px auto;
+      max-width: 900px;
+      line-height: 1.6;
+      padding: 0 16px;
+    }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 6px;
+    }
+    .card {
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
+      padding: 20px;
+      margin: 16px 0;
+    }
   </style>
 </head>
 <body>
@@ -357,6 +403,11 @@ MINIMAL_INDEX = """
 </html>
 """
 
+VALID_BILL_PAYMENT_FROM = (
+    "FROM bill_payments bp "
+    "JOIN bills b ON b.id = bp.bill_id AND b.is_deleted = 0 AND b.status != 'Void'"
+)
+
 
 class ValidationError(Exception):
     def __init__(self, message: str):
@@ -364,9 +415,40 @@ class ValidationError(Exception):
         super().__init__(message)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+class RateLimiter:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._store = {}
+
+    def allow(self, key: str, limit: int, window: int) -> bool:
+        now = time.time()
+
+        with self._lock:
+            entries = [
+                timestamp
+                for timestamp in self._store.get(key, [])
+                if timestamp > now - window
+            ]
+
+            if len(entries) >= limit:
+                self._store[key] = entries
+                return False
+
+            entries.append(now)
+            self._store[key] = entries
+            return True
+
+
+RATE_LIMITER = RateLimiter()
+
+
+def rate_limit(key: str, limit: int, window: int) -> bool:
+    return RATE_LIMITER.allow(key, limit, window)
+
+
+# ---------------------------------------------------------------------------
 # Generic helpers
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 def rows_to_list(rows):
     return [dict(r) for r in rows]
@@ -389,6 +471,7 @@ def parse_iso_date(value, field="date", allow_none=False):
         if allow_none:
             return None
         raise ValidationError(f"{field} is required")
+
     try:
         return datetime.strptime(str(value), "%Y-%m-%d").date().isoformat()
     except ValueError:
@@ -445,10 +528,11 @@ def parse_amount_from_data(data, field="amount", default_cents=None, allow_zero=
         except (TypeError, ValueError):
             raise ValidationError(f"{cents_field} is invalid")
 
-        if not allow_zero and cents <= 0:
-            raise ValidationError(f"{field} must be greater than 0")
         if cents < 0:
             raise ValidationError(f"{field} cannot be negative")
+
+        if not allow_zero and cents <= 0:
+            raise ValidationError(f"{field} must be greater than 0")
 
         return cents
 
@@ -506,6 +590,7 @@ def sanitize_csv_cell(value):
         return ""
 
     text = str(value)
+
     if text and text[0] in {"=", "+", "-", "@", "\t"}:
         return "'" + text
 
@@ -530,25 +615,14 @@ def csv_response(filename, rows, headers):
         writer.writerow([sanitize_csv_cell(v) for v in row])
 
     content = "\ufeff" + out.getvalue()
+
     resp = make_response(content)
     resp.headers["Content-Type"] = "text/csv; charset=utf-8"
     resp.headers["Content-Disposition"] = (
         f"attachment; filename=\"{filename}\"; filename*=UTF-8''{quote(filename)}"
     )
+
     return resp
-
-
-def rate_limit(key: str, limit: int, window: int):
-    now = time.time()
-    entries = [ts for ts in RATE_STORE.get(key, []) if ts > now - window]
-
-    if len(entries) >= limit:
-        RATE_STORE[key] = entries
-        return False
-
-    entries.append(now)
-    RATE_STORE[key] = entries
-    return True
 
 
 def get_pagination():
@@ -565,9 +639,9 @@ def json_payload():
     return request.get_json(silent=True) or {}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Flask / DB plumbing
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 def get_db():
     if "db" not in g:
@@ -575,6 +649,8 @@ def get_db():
         g.db.row_factory = sqlite3.Row
         g.db.execute("PRAGMA foreign_keys=ON")
         g.db.execute("PRAGMA journal_mode=WAL")
+        g.db.execute("PRAGMA busy_timeout=5000")
+
     return g.db
 
 
@@ -603,6 +679,10 @@ def create_app(test_config=None):
         config.update(test_config)
 
     app.config.update(config)
+
+    db_path = Path(app.config["DATABASE"])
+    if str(db_path) != ":memory:":
+        db_path.parent.mkdir(parents=True, exist_ok=True)
 
     if not app.config["SECRET_KEY"]:
         if app.debug or app.testing or os.getenv("FF_ALLOW_DEV_SECRET", "1") == "1":
@@ -672,31 +752,41 @@ def create_app(test_config=None):
 
     @app.before_request
     def global_api_guard():
-        if request.path.startswith("/api/"):
-            ip = request.remote_addr or "unknown"
+        if not request.path.startswith("/api/"):
+            return None
 
-            if not rate_limit(f"api:{ip}", limit=900, window=60):
-                return jsonify({"error": "Too many requests"}), 429
+        ip = request.remote_addr or "unknown"
 
-            public_paths = {
-                "/api/auth/login",
-                "/api/auth/logout",
-                "/healthz",
-                "/readyz",
-            }
+        if not RATE_LIMITER.allow(f"api:{ip}", limit=900, window=60):
+            return jsonify({"error": "Too many requests"}), 429
 
-            if request.method in {"POST", "PUT", "PATCH", "DELETE"} and request.path not in public_paths:
-                user = get_current_user()
-                if not user:
-                    return jsonify({"error": "Authentication required"}), 401
+        public_paths = {
+            "/api/auth/login",
+            "/api/auth/logout",
+            "/healthz",
+            "/readyz",
+        }
 
-                token = request.headers.get("X-CSRF-Token", "")
-                if not token:
-                    payload = json_payload()
-                    token = payload.get("_csrf", "")
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"} and request.path not in public_paths:
+            user = get_current_user()
 
-                if not token or token != session.get("_csrf"):
-                    return jsonify({"error": "CSRF validation failed"}), 403
+            if not user:
+                return jsonify({"error": "Authentication required"}), 401
+
+            token = request.headers.get("X-CSRF-Token", "")
+
+            if not token:
+                payload = json_payload()
+                token = payload.get("_csrf", "")
+
+            expected = session.get("_csrf", "")
+
+            if (
+                not token
+                or not expected
+                or not hmac.compare_digest(str(token), str(expected))
+            ):
+                return jsonify({"error": "CSRF validation failed"}), 403
 
         return None
 
@@ -704,15 +794,17 @@ def create_app(test_config=None):
         init_db()
 
     register_routes(app)
+
     return app
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Init / default data
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 def init_db():
     conn = get_db()
+
     with conn:
         conn.executescript(SCHEMA)
 
@@ -753,6 +845,7 @@ def ensure_default_categories():
 
 def ensure_default_admin():
     conn = get_db()
+
     admin_user = current_app.config.get("ADMIN_USER", "admin")
     admin_pass = current_app.config.get("ADMIN_PASSWORD") or ""
 
@@ -766,6 +859,7 @@ def ensure_default_admin():
 
     if not admin_pass:
         admin_pass = secrets.token_urlsafe(16)
+
         current_app.logger.warning("*" * 70)
         current_app.logger.warning("Created admin user '%s' with generated password:", admin_user)
         current_app.logger.warning(admin_pass)
@@ -779,17 +873,19 @@ def ensure_default_admin():
         )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Settings
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 def load_settings():
     settings = DEFAULT_SETTINGS.copy()
     conn = get_db()
 
     rows = conn.execute("SELECT key, value FROM settings").fetchall()
+
     for row in rows:
         key = row["key"]
+
         if key not in DEFAULT_SETTINGS:
             continue
 
@@ -816,16 +912,18 @@ def save_settings(data):
             )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Auth / audit helpers
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 def get_current_user():
     username = session.get("username")
+
     if not username:
         return None
 
     conn = get_db()
+
     return conn.execute(
         "SELECT id, username, role FROM users WHERE username=?",
         (username,),
@@ -835,6 +933,7 @@ def get_current_user():
 def generate_csrf_token():
     if "_csrf" not in session:
         session["_csrf"] = secrets.token_urlsafe(32)
+
     return session["_csrf"]
 
 
@@ -842,10 +941,12 @@ def api_login_required(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
         user = get_current_user()
+
         if not user:
             return jsonify({"error": "Authentication required"}), 401
 
         g.user = user
+
         return fn(*args, **kwargs)
 
     return wrapper
@@ -856,6 +957,7 @@ def require_roles(*roles):
         @wraps(fn)
         def wrapper(*args, **kwargs):
             user = get_current_user()
+
             if not user:
                 return jsonify({"error": "Authentication required"}), 401
 
@@ -863,6 +965,7 @@ def require_roles(*roles):
                 return jsonify({"error": "Forbidden"}), 403
 
             g.user = user
+
             return fn(*args, **kwargs)
 
         return wrapper
@@ -872,41 +975,61 @@ def require_roles(*roles):
 
 def audit(action, entity_type="", entity_id="", details=""):
     try:
-        with get_db() as conn:
-            conn.execute(
-                """
-                INSERT INTO audit_logs (
-                    username, action, entity_type, entity_id, details, ip_address, user_agent
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    session.get("username", "anonymous"),
-                    action,
-                    entity_type,
-                    str(entity_id),
-                    details,
-                    request.remote_addr or "",
-                    request.headers.get("User-Agent", ""),
-                ),
-            )
+        conn = get_db()
+        already_in_transaction = conn.in_transaction
+
+        conn.execute(
+            """
+            INSERT INTO audit_logs (
+                username,
+                action,
+                entity_type,
+                entity_id,
+                details,
+                ip_address,
+                user_agent
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session.get("username", "anonymous"),
+                action,
+                entity_type,
+                str(entity_id),
+                details,
+                request.remote_addr or "",
+                request.headers.get("User-Agent", ""),
+            ),
+        )
+
+        if not already_in_transaction:
+            conn.commit()
     except Exception:
         current_app.logger.exception("Audit logging failed")
 
 
 def notify(title, body="", link="", username=""):
-    with get_db() as conn:
+    try:
+        conn = get_db()
+        already_in_transaction = conn.in_transaction
+
         conn.execute(
             "INSERT INTO notifications (username, title, body, link) VALUES (?, ?, ?, ?)",
             (username, title, body, link),
         )
 
+        if not already_in_transaction:
+            conn.commit()
+    except Exception:
+        current_app.logger.exception("Notification logging failed")
 
-# ─────────────────────────────────────────────────────────────────────────────
+
+# ---------------------------------------------------------------------------
 # Money / transaction helpers
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 def parse_transaction_payload(data, date_field):
     title = str(data.get("title") or "").strip()
+
     if not title:
         raise ValidationError("title is required")
 
@@ -917,8 +1040,8 @@ def parse_transaction_payload(data, date_field):
     member = str(data.get("member") or "").strip()
     notes = str(data.get("notes") or "").strip()
     account_id = data.get("account_id") or None
-
     tags = data.get("tags") or ""
+
     if isinstance(tags, list):
         tags = ",".join(str(t).strip() for t in tags if str(t).strip())
     else:
@@ -942,8 +1065,16 @@ def insert_expense(conn, data):
     cur = conn.execute(
         """
         INSERT INTO expenses (
-            title, category, amount_cents, expense_date, store, receipt_ref,
-            notes, member, account_id, tags
+            title,
+            category,
+            amount_cents,
+            expense_date,
+            store,
+            receipt_ref,
+            notes,
+            member,
+            account_id,
+            tags
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
@@ -969,8 +1100,15 @@ def insert_income(conn, data):
     cur = conn.execute(
         """
         INSERT INTO income (
-            title, category, amount_cents, income_date, source,
-            notes, member, account_id, tags
+            title,
+            category,
+            amount_cents,
+            income_date,
+            source,
+            notes,
+            member,
+            account_id,
+            tags
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
@@ -1000,6 +1138,7 @@ def parse_bill_payload(data):
     due_date = parse_iso_date(data.get("due_date"), "due_date")
 
     status = str(data.get("status") or "Pending").strip()
+
     if status not in BILL_STATUSES:
         raise ValidationError("Invalid bill status")
 
@@ -1008,6 +1147,7 @@ def parse_bill_payload(data):
     account_id = data.get("account_id") or None
 
     items = data.get("items") or []
+
     if not isinstance(items, list):
         raise ValidationError("items must be a list")
 
@@ -1019,10 +1159,12 @@ def parse_bill_payload(data):
             raise ValidationError(f"items[{idx}] must be an object")
 
         item_name = str(item.get("item_name") or "").strip()
+
         if not item_name:
             raise ValidationError(f"items[{idx}].item_name is required")
 
         quantity = parse_quantity(item.get("quantity", 1), f"items[{idx}].quantity")
+
         unit_price_cents = parse_amount_from_data(
             item,
             field="unit_price",
@@ -1044,6 +1186,9 @@ def parse_bill_payload(data):
             "total_cents": line_total_cents,
         })
 
+    if not clean_items:
+        raise ValidationError("items must contain at least one item")
+
     discount_pct = parse_percent(data.get("discount_pct", 0), "discount_pct")
     tax_rate = parse_percent(data.get("tax_rate", 0), "tax_rate")
 
@@ -1053,6 +1198,7 @@ def parse_bill_payload(data):
     )
 
     taxable_cents = subtotal_cents - discount_cents
+
     tax_cents = int(
         (Decimal(taxable_cents) * Decimal(str(tax_rate)) / Decimal("100"))
         .to_integral_value(rounding=ROUND_HALF_UP)
@@ -1108,10 +1254,25 @@ def insert_bill(conn, payload, bill_number, paid_cents=0, status="Pending", paid
     cur = conn.execute(
         """
         INSERT INTO bills (
-            bill_number, payee_id, payee_name, payee_email, payee_address,
-            bill_category, bill_date, due_date, subtotal_cents, discount_pct,
-            discount_cents, tax_rate, tax_cents, total_cents, paid_cents,
-            status, notes, account_id, paid_at
+            bill_number,
+            payee_id,
+            payee_name,
+            payee_email,
+            payee_address,
+            bill_category,
+            bill_date,
+            due_date,
+            subtotal_cents,
+            discount_pct,
+            discount_cents,
+            tax_rate,
+            tax_cents,
+            total_cents,
+            paid_cents,
+            status,
+            notes,
+            account_id,
+            paid_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
@@ -1143,7 +1304,12 @@ def insert_bill(conn, payload, bill_number, paid_cents=0, status="Pending", paid
         conn.execute(
             """
             INSERT INTO bill_items (
-                bill_id, item_name, description, quantity, unit_price_cents, total_cents
+                bill_id,
+                item_name,
+                description,
+                quantity,
+                unit_price_cents,
+                total_cents
             ) VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
@@ -1160,7 +1326,11 @@ def insert_bill(conn, payload, bill_number, paid_cents=0, status="Pending", paid
         conn.execute(
             """
             INSERT INTO bill_payments (
-                bill_id, amount_cents, payment_date, account_id, notes
+                bill_id,
+                amount_cents,
+                payment_date,
+                account_id,
+                notes
             ) VALUES (?, ?, ?, ?, ?)
             """,
             (
@@ -1192,15 +1362,57 @@ def advance_recurring_date(current_date_str, frequency, interval_value):
     return d.isoformat()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+def compute_account_balance(conn, account):
+    income_cents = conn.execute(
+        """
+        SELECT COALESCE(SUM(amount_cents), 0)
+        FROM income
+        WHERE is_deleted = 0 AND account_id = ?
+        """,
+        (account["id"],),
+    ).fetchone()[0]
+
+    expense_cents = conn.execute(
+        """
+        SELECT COALESCE(SUM(amount_cents), 0)
+        FROM expenses
+        WHERE is_deleted = 0 AND account_id = ?
+        """,
+        (account["id"],),
+    ).fetchone()[0]
+
+    payment_cents = conn.execute(
+        f"""
+        SELECT COALESCE(SUM(bp.amount_cents), 0)
+        {VALID_BILL_PAYMENT_FROM}
+        WHERE bp.account_id = ?
+        """,
+        (account["id"],),
+    ).fetchone()[0]
+
+    opening_cents = account["opening_balance_cents"]
+
+    if account["account_type"] in LIABILITY_ACCOUNT_TYPES:
+        # Liability accounts represent money owed.
+        # Expenses increase debt, payments reduce debt.
+        balance_cents = opening_cents + expense_cents - payment_cents - income_cents
+        net_worth_cents = -balance_cents
+    else:
+        # Asset accounts represent money owned.
+        balance_cents = opening_cents + income_cents - expense_cents - payment_cents
+        net_worth_cents = balance_cents
+
+    return balance_cents, net_worth_cents
+
+
+# ---------------------------------------------------------------------------
 # Routes
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 def register_routes(app):
-
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
     # Home / health
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
 
     @app.route("/")
     def index():
@@ -1222,17 +1434,19 @@ def register_routes(app):
         except Exception:
             return jsonify({"status": "unavailable"}), 503
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
     # Auth
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
 
     @app.post("/api/auth/login")
     def auth_login():
         ip = request.remote_addr or "unknown"
-        if not rate_limit(f"login:{ip}", limit=10, window=60):
+
+        if not RATE_LIMITER.allow(f"login:{ip}", limit=10, window=60):
             return jsonify({"error": "Too many login attempts"}), 429
 
         data = json_payload()
+
         username = str(data.get("username") or "").strip()
         password = str(data.get("password") or "")
 
@@ -1240,6 +1454,7 @@ def register_routes(app):
             return jsonify({"error": "Username and password are required"}), 400
 
         conn = get_db()
+
         user = conn.execute(
             "SELECT * FROM users WHERE username=?",
             (username,),
@@ -1255,6 +1470,7 @@ def register_routes(app):
         session.permanent = True
 
         csrf_token = generate_csrf_token()
+
         audit("login_success", "user", user["username"])
 
         return jsonify({
@@ -1269,10 +1485,12 @@ def register_routes(app):
     @app.post("/api/auth/logout")
     def auth_logout():
         username = session.get("username")
+
         if username:
             audit("logout", "user", username)
 
         session.clear()
+
         return jsonify({"success": True})
 
     @app.get("/api/me")
@@ -1295,6 +1513,7 @@ def register_routes(app):
     @api_login_required
     def change_password():
         data = json_payload()
+
         current_password = str(data.get("current_password") or "")
         new_password = str(data.get("new_password") or "")
 
@@ -1302,6 +1521,7 @@ def register_routes(app):
             raise ValidationError("new_password must be at least 8 characters")
 
         conn = get_db()
+
         user = conn.execute(
             "SELECT * FROM users WHERE username=?",
             (g.user["username"],),
@@ -1317,11 +1537,12 @@ def register_routes(app):
             )
 
         audit("password_changed", "user", user["username"])
+
         return jsonify({"success": True})
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
     # Settings
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
 
     @app.get("/api/settings")
     @api_login_required
@@ -1334,11 +1555,13 @@ def register_routes(app):
                 "SELECT name FROM categories WHERE type='expense' AND is_active=1 ORDER BY name"
             ).fetchall()
         ]
+
         settings["income_categories"] = [
             r["name"] for r in conn.execute(
                 "SELECT name FROM categories WHERE type='income' AND is_active=1 ORDER BY name"
             ).fetchall()
         ]
+
         settings["bill_categories"] = [
             r["name"] for r in conn.execute(
                 "SELECT name FROM categories WHERE type='bill' AND is_active=1 ORDER BY name"
@@ -1386,13 +1609,14 @@ def register_routes(app):
             ).upper()[:12] or "BILL"
 
         save_settings(settings)
+
         audit("settings_updated", "settings", "", "Settings updated")
 
         return jsonify({"success": True})
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
     # Categories
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
 
     @app.get("/api/categories")
     @api_login_required
@@ -1406,6 +1630,7 @@ def register_routes(app):
         if category_type:
             if category_type not in {"expense", "income", "bill"}:
                 raise ValidationError("Invalid category type")
+
             sql += " AND type=?"
             params.append(category_type)
 
@@ -1415,12 +1640,14 @@ def register_routes(app):
         sql += " ORDER BY type, name"
 
         conn = get_db()
+
         return jsonify(rows_to_list(conn.execute(sql, params).fetchall()))
 
     @app.post("/api/categories")
     @require_roles("Admin", "Editor")
     def category_create():
         data = json_payload()
+
         name = str(data.get("name") or "").strip()
         category_type = str(data.get("type") or "").strip()
 
@@ -1437,6 +1664,7 @@ def register_routes(app):
             )
 
         audit("category_created", "category", name)
+
         return jsonify({"success": True})
 
     @app.put("/api/categories/<int:cid>")
@@ -1457,6 +1685,7 @@ def register_routes(app):
             )
 
         audit("category_updated", "category", cid)
+
         return jsonify({"success": True})
 
     @app.delete("/api/categories/<int:cid>")
@@ -1466,25 +1695,29 @@ def register_routes(app):
             conn.execute("UPDATE categories SET is_active=0 WHERE id=?", (cid,))
 
         audit("category_deactivated", "category", cid)
+
         return jsonify({"success": True})
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
     # Members
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
 
     @app.get("/api/members")
     @api_login_required
     def members_list():
         conn = get_db()
+
         rows = conn.execute(
             "SELECT * FROM members WHERE is_active=1 ORDER BY name"
         ).fetchall()
+
         return jsonify(rows_to_list(rows))
 
     @app.post("/api/members")
     @require_roles("Admin", "Editor")
     def member_create():
         data = json_payload()
+
         name = str(data.get("name") or "").strip()
 
         if not name:
@@ -1497,12 +1730,14 @@ def register_routes(app):
             )
 
         audit("member_created", "member", name)
+
         return jsonify({"success": True})
 
     @app.put("/api/members/<int:mid>")
     @require_roles("Admin", "Editor")
     def member_update(mid):
         data = json_payload()
+
         name = str(data.get("name") or "").strip()
 
         if not name:
@@ -1521,6 +1756,7 @@ def register_routes(app):
             )
 
         audit("member_updated", "member", mid)
+
         return jsonify({"success": True})
 
     @app.delete("/api/members/<int:mid>")
@@ -1530,45 +1766,31 @@ def register_routes(app):
             conn.execute("UPDATE members SET is_active=0 WHERE id=?", (mid,))
 
         audit("member_deactivated", "member", mid)
+
         return jsonify({"success": True})
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
     # Accounts
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
 
     @app.get("/api/accounts")
     @api_login_required
     def accounts_list():
         conn = get_db()
-        accounts = rows_to_list(conn.execute(
-            "SELECT * FROM accounts WHERE is_active=1 ORDER BY name"
-        ).fetchall())
+
+        accounts = rows_to_list(
+            conn.execute(
+                "SELECT * FROM accounts WHERE is_active=1 ORDER BY name"
+            ).fetchall()
+        )
 
         for account in accounts:
-            income_cents = conn.execute(
-                "SELECT COALESCE(SUM(amount_cents),0) FROM income WHERE is_deleted=0 AND account_id=?",
-                (account["id"],),
-            ).fetchone()[0]
-
-            expense_cents = conn.execute(
-                "SELECT COALESCE(SUM(amount_cents),0) FROM expenses WHERE is_deleted=0 AND account_id=?",
-                (account["id"],),
-            ).fetchone()[0]
-
-            payment_cents = conn.execute(
-                "SELECT COALESCE(SUM(amount_cents),0) FROM bill_payments WHERE account_id=?",
-                (account["id"],),
-            ).fetchone()[0]
-
-            balance_cents = (
-                account["opening_balance_cents"]
-                + income_cents
-                - expense_cents
-                - payment_cents
-            )
+            balance_cents, net_worth_cents = compute_account_balance(conn, account)
 
             account["balance_cents"] = balance_cents
             account["balance"] = cents_to_float(balance_cents)
+            account["net_worth_cents"] = net_worth_cents
+            account["net_worth"] = cents_to_float(net_worth_cents)
 
         return jsonify(accounts)
 
@@ -1576,6 +1798,7 @@ def register_routes(app):
     @require_roles("Admin", "Editor")
     def account_create():
         data = json_payload()
+
         name = str(data.get("name") or "").strip()
         account_type = str(data.get("account_type") or "Checking").strip()
 
@@ -1602,12 +1825,14 @@ def register_routes(app):
             )
 
         audit("account_created", "account", name)
+
         return jsonify({"success": True})
 
     @app.put("/api/accounts/<int:aid>")
     @require_roles("Admin", "Editor")
     def account_update(aid):
         data = json_payload()
+
         name = str(data.get("name") or "").strip()
         account_type = str(data.get("account_type") or "Checking").strip()
 
@@ -1642,6 +1867,7 @@ def register_routes(app):
             )
 
         audit("account_updated", "account", aid)
+
         return jsonify({"success": True})
 
     @app.delete("/api/accounts/<int:aid>")
@@ -1651,17 +1877,19 @@ def register_routes(app):
             conn.execute("UPDATE accounts SET is_active=0 WHERE id=?", (aid,))
 
         audit("account_deactivated", "account", aid)
+
         return jsonify({"success": True})
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
     # Payees
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
 
     @app.get("/api/payees")
     @api_login_required
     def payees_list():
         q = str(request.args.get("q") or "").strip()
         category = str(request.args.get("category") or "").strip()
+
         limit, offset = get_pagination()
 
         where = "WHERE 1=1"
@@ -1679,7 +1907,7 @@ def register_routes(app):
         conn = get_db()
 
         total = conn.execute(
-            f"SELECT COUNT(*) FROM payees {where}",
+            f"SELECT COUNT(*) FROM payees p {where}",
             params,
         ).fetchone()[0]
 
@@ -1699,6 +1927,7 @@ def register_routes(app):
         ).fetchall()
 
         items = rows_to_list(rows)
+
         for item in items:
             item["total_paid"] = cents_to_float(item["total_paid_cents"])
 
@@ -1713,6 +1942,7 @@ def register_routes(app):
     @require_roles("Admin", "Editor")
     def payee_create():
         data = json_payload()
+
         name = str(data.get("name") or "").strip()
 
         if not name:
@@ -1735,18 +1965,21 @@ def register_routes(app):
             )
 
         audit("payee_created", "payee", name)
+
         return jsonify({"success": True})
 
     @app.get("/api/payees/<int:pid>")
     @api_login_required
     def payee_detail(pid):
         conn = get_db()
+
         row = conn.execute("SELECT * FROM payees WHERE id=?", (pid,)).fetchone()
 
         if not row:
             return jsonify({"error": "Not found"}), 404
 
         payee = row_to_dict(row)
+
         payee["bills"] = rows_to_list(conn.execute(
             """
             SELECT id, bill_number, total_cents, paid_cents, status, bill_date, due_date
@@ -1764,6 +1997,7 @@ def register_routes(app):
     @require_roles("Admin", "Editor")
     def payee_update(pid):
         data = json_payload()
+
         name = str(data.get("name") or "").strip()
 
         if not name:
@@ -1788,6 +2022,7 @@ def register_routes(app):
             )
 
         audit("payee_updated", "payee", pid)
+
         return jsonify({"success": True})
 
     @app.delete("/api/payees/<int:pid>")
@@ -1797,11 +2032,12 @@ def register_routes(app):
             conn.execute("DELETE FROM payees WHERE id=?", (pid,))
 
         audit("payee_deleted", "payee", pid)
+
         return jsonify({"success": True})
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
     # Bills
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
 
     @app.get("/api/bills")
     @api_login_required
@@ -1810,16 +2046,19 @@ def register_routes(app):
         status = str(request.args.get("status") or "").strip()
         payee_id = request.args.get("payee_id")
         category = str(request.args.get("category") or "").strip()
+
         date_from = parse_iso_date(request.args.get("from"), "from", allow_none=True)
         date_to = parse_iso_date(request.args.get("to"), "to", allow_none=True)
+
         limit, offset = get_pagination()
 
         sql = """
-            SELECT b.*,
-                   (b.total_cents - b.paid_cents) AS balance_cents
-            FROM bills b
-            WHERE b.is_deleted=0
+        SELECT b.*,
+               (b.total_cents - b.paid_cents) AS balance_cents
+        FROM bills b
+        WHERE b.is_deleted=0
         """
+
         params = []
 
         if q:
@@ -1860,9 +2099,10 @@ def register_routes(app):
         ).fetchone()[0]
 
         sql += " ORDER BY b.created_at DESC LIMIT ? OFFSET ?"
-        rows = conn.execute(sql, params + [limit, offset]).fetchall()
 
+        rows = conn.execute(sql, params + [limit, offset]).fetchall()
         items = rows_to_list(rows)
+
         today = date.today().isoformat()
 
         for item in items:
@@ -1963,6 +2203,7 @@ def register_routes(app):
     @api_login_required
     def bill_detail(bid):
         conn = get_db()
+
         row = conn.execute(
             "SELECT * FROM bills WHERE id=? AND is_deleted=0",
             (bid,),
@@ -1972,6 +2213,7 @@ def register_routes(app):
             return jsonify({"error": "Not found"}), 404
 
         bill = row_to_dict(row)
+
         bill["items"] = rows_to_list(conn.execute(
             "SELECT * FROM bill_items WHERE bill_id=? ORDER BY id",
             (bid,),
@@ -1997,6 +2239,7 @@ def register_routes(app):
         bill["paid_amount"] = cents_to_float(bill["paid_cents"])
 
         today = date.today().isoformat()
+
         if bill["status"] in {"Pending", "Partially Paid"} and bill["due_date"] < today:
             bill["display_status"] = "Overdue"
         else:
@@ -2032,7 +2275,11 @@ def register_routes(app):
                         conn.execute(
                             """
                             INSERT INTO bill_payments (
-                                bill_id, amount_cents, payment_date, account_id, notes
+                                bill_id,
+                                amount_cents,
+                                payment_date,
+                                account_id,
+                                notes
                             ) VALUES (?, ?, ?, ?, ?)
                             """,
                             (
@@ -2065,6 +2312,7 @@ def register_routes(app):
 
                 elif new_status == "Pending":
                     derived_status = "Pending" if row["paid_cents"] == 0 else "Partially Paid"
+
                     conn.execute(
                         """
                         UPDATE bills
@@ -2085,6 +2333,7 @@ def register_routes(app):
                     )
 
             audit("bill_status_changed", "bill", bid, new_status)
+
             return jsonify({"success": True})
 
         payload = parse_bill_payload(data)
@@ -2115,6 +2364,7 @@ def register_routes(app):
                 status = "Pending"
             elif paid_cents >= payload["total_cents"]:
                 status = "Paid"
+
                 if not paid_at:
                     paid_at = datetime.now(timezone.utc).isoformat()
             else:
@@ -2159,7 +2409,12 @@ def register_routes(app):
                 conn.execute(
                     """
                     INSERT INTO bill_items (
-                        bill_id, item_name, description, quantity, unit_price_cents, total_cents
+                        bill_id,
+                        item_name,
+                        description,
+                        quantity,
+                        unit_price_cents,
+                        total_cents
                     ) VALUES (?, ?, ?, ?, ?, ?)
                     """,
                     (
@@ -2173,6 +2428,7 @@ def register_routes(app):
                 )
 
         audit("bill_updated", "bill", bid)
+
         return jsonify({"success": True})
 
     @app.delete("/api/bills/<int:bid>")
@@ -2185,6 +2441,7 @@ def register_routes(app):
             )
 
         audit("bill_deleted", "bill", bid)
+
         return jsonify({"success": True})
 
     @app.post("/api/bills/<int:bid>/pay")
@@ -2205,6 +2462,7 @@ def register_routes(app):
             raise ValidationError("Cannot pay a void bill")
 
         balance_cents = bill["total_cents"] - bill["paid_cents"]
+
         if balance_cents <= 0:
             raise ValidationError("Bill is already fully paid")
 
@@ -2231,7 +2489,11 @@ def register_routes(app):
             conn.execute(
                 """
                 INSERT INTO bill_payments (
-                    bill_id, amount_cents, payment_date, account_id, notes
+                    bill_id,
+                    amount_cents,
+                    payment_date,
+                    account_id,
+                    notes
                 ) VALUES (?, ?, ?, ?, ?)
                 """,
                 (
@@ -2253,6 +2515,7 @@ def register_routes(app):
             )
 
         audit("bill_payment_recorded", "bill", bid, str(amount_cents))
+
         return jsonify({"success": True})
 
     @app.post("/api/bills/<int:bid>/void")
@@ -2269,6 +2532,7 @@ def register_routes(app):
             )
 
         audit("bill_voided", "bill", bid)
+
         return jsonify({"success": True})
 
     @app.get("/api/bills/<int:bid>/print")
@@ -2285,26 +2549,34 @@ def register_routes(app):
             return "Bill not found", 404
 
         bill = row_to_dict(row)
+
         items = rows_to_list(conn.execute(
             "SELECT * FROM bill_items WHERE bill_id=? ORDER BY id",
             (bid,),
         ).fetchall())
 
         settings = load_settings()
+
         return generate_print_bill(bill, items, settings)
 
     @app.get("/api/bills/export")
     @api_login_required
     def bills_export():
         conn = get_db()
+
         rows = conn.execute(
             "SELECT * FROM bills WHERE is_deleted=0 ORDER BY created_at DESC"
         ).fetchall()
 
         total_paid_cents = sum(r["paid_cents"] for r in rows)
-        total_outstanding_cents = sum((r["total_cents"] - r["paid_cents"]) for r in rows if r["status"] != "Void")
+        total_outstanding_cents = sum(
+            (r["total_cents"] - r["paid_cents"])
+            for r in rows
+            if r["status"] != "Void"
+        )
 
         data_rows = []
+
         for r in rows:
             data_rows.append([
                 r["bill_number"],
@@ -2335,14 +2607,25 @@ def register_routes(app):
             "bills.csv",
             data_rows,
             [
-                "Bill #", "Payee", "Email", "Category", "Bill Date", "Due Date",
-                "Subtotal", "Discount", "Tax", "Total", "Paid", "Balance", "Status",
+                "Bill #",
+                "Payee",
+                "Email",
+                "Category",
+                "Bill Date",
+                "Due Date",
+                "Subtotal",
+                "Discount",
+                "Tax",
+                "Total",
+                "Paid",
+                "Balance",
+                "Status",
             ],
         )
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
     # Expenses
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
 
     @app.get("/api/expenses")
     @api_login_required
@@ -2350,8 +2633,10 @@ def register_routes(app):
         q = str(request.args.get("q") or "").strip()
         category = str(request.args.get("category") or "").strip()
         member = str(request.args.get("member") or "").strip()
+
         date_from = parse_iso_date(request.args.get("from"), "from", allow_none=True)
         date_to = parse_iso_date(request.args.get("to"), "to", allow_none=True)
+
         limit, offset = get_pagination()
 
         sql = "SELECT * FROM expenses WHERE is_deleted=0"
@@ -2383,9 +2668,10 @@ def register_routes(app):
         total = conn.execute(f"SELECT COUNT(*) FROM ({sql})", params).fetchone()[0]
 
         sql += " ORDER BY expense_date DESC, created_at DESC LIMIT ? OFFSET ?"
-        rows = conn.execute(sql, params + [limit, offset]).fetchall()
 
+        rows = conn.execute(sql, params + [limit, offset]).fetchall()
         items = rows_to_list(rows)
+
         for item in items:
             item["amount"] = cents_to_float(item["amount_cents"])
 
@@ -2403,7 +2689,8 @@ def register_routes(app):
 
         with get_db() as conn:
             expense_id = insert_expense(conn, data)
-            audit("expense_created", "expense", expense_id)
+
+        audit("expense_created", "expense", expense_id)
 
         return jsonify({"success": True, "id": expense_id})
 
@@ -2411,6 +2698,7 @@ def register_routes(app):
     @api_login_required
     def expense_detail(eid):
         conn = get_db()
+
         row = conn.execute(
             "SELECT * FROM expenses WHERE id=? AND is_deleted=0",
             (eid,),
@@ -2421,6 +2709,7 @@ def register_routes(app):
 
         expense = row_to_dict(row)
         expense["amount"] = cents_to_float(expense["amount_cents"])
+
         return jsonify(expense)
 
     @app.put("/api/expenses/<int:eid>")
@@ -2464,6 +2753,7 @@ def register_routes(app):
             )
 
         audit("expense_updated", "expense", eid)
+
         return jsonify({"success": True})
 
     @app.delete("/api/expenses/<int:eid>")
@@ -2476,12 +2766,14 @@ def register_routes(app):
             )
 
         audit("expense_deleted", "expense", eid)
+
         return jsonify({"success": True})
 
     @app.get("/api/expenses/export")
     @api_login_required
     def expenses_export():
         conn = get_db()
+
         rows = conn.execute(
             "SELECT * FROM expenses WHERE is_deleted=0 ORDER BY expense_date DESC"
         ).fetchall()
@@ -2489,6 +2781,7 @@ def register_routes(app):
         total_cents = sum(r["amount_cents"] for r in rows)
 
         data_rows = []
+
         for r in rows:
             data_rows.append([
                 r["id"],
@@ -2510,14 +2803,22 @@ def register_routes(app):
             "expenses.csv",
             data_rows,
             [
-                "ID", "Title", "Category", "Amount", "Date",
-                "Store / Vendor", "Receipt Ref", "Family Member", "Tags", "Notes",
+                "ID",
+                "Title",
+                "Category",
+                "Amount",
+                "Date",
+                "Store / Vendor",
+                "Receipt Ref",
+                "Family Member",
+                "Tags",
+                "Notes",
             ],
         )
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
     # Income
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
 
     @app.get("/api/income")
     @api_login_required
@@ -2525,8 +2826,10 @@ def register_routes(app):
         q = str(request.args.get("q") or "").strip()
         category = str(request.args.get("category") or "").strip()
         member = str(request.args.get("member") or "").strip()
+
         date_from = parse_iso_date(request.args.get("from"), "from", allow_none=True)
         date_to = parse_iso_date(request.args.get("to"), "to", allow_none=True)
+
         limit, offset = get_pagination()
 
         sql = "SELECT * FROM income WHERE is_deleted=0"
@@ -2558,9 +2861,10 @@ def register_routes(app):
         total = conn.execute(f"SELECT COUNT(*) FROM ({sql})", params).fetchone()[0]
 
         sql += " ORDER BY income_date DESC, created_at DESC LIMIT ? OFFSET ?"
-        rows = conn.execute(sql, params + [limit, offset]).fetchall()
 
+        rows = conn.execute(sql, params + [limit, offset]).fetchall()
         items = rows_to_list(rows)
+
         for item in items:
             item["amount"] = cents_to_float(item["amount_cents"])
 
@@ -2578,7 +2882,8 @@ def register_routes(app):
 
         with get_db() as conn:
             income_id = insert_income(conn, data)
-            audit("income_created", "income", income_id)
+
+        audit("income_created", "income", income_id)
 
         return jsonify({"success": True, "id": income_id})
 
@@ -2586,6 +2891,7 @@ def register_routes(app):
     @api_login_required
     def income_detail(iid):
         conn = get_db()
+
         row = conn.execute(
             "SELECT * FROM income WHERE id=? AND is_deleted=0",
             (iid,),
@@ -2596,6 +2902,7 @@ def register_routes(app):
 
         income_item = row_to_dict(row)
         income_item["amount"] = cents_to_float(income_item["amount_cents"])
+
         return jsonify(income_item)
 
     @app.put("/api/income/<int:iid>")
@@ -2638,6 +2945,7 @@ def register_routes(app):
             )
 
         audit("income_updated", "income", iid)
+
         return jsonify({"success": True})
 
     @app.delete("/api/income/<int:iid>")
@@ -2650,12 +2958,14 @@ def register_routes(app):
             )
 
         audit("income_deleted", "income", iid)
+
         return jsonify({"success": True})
 
     @app.get("/api/income/export")
     @api_login_required
     def income_export():
         conn = get_db()
+
         rows = conn.execute(
             "SELECT * FROM income WHERE is_deleted=0 ORDER BY income_date DESC"
         ).fetchall()
@@ -2663,6 +2973,7 @@ def register_routes(app):
         total_cents = sum(r["amount_cents"] for r in rows)
 
         data_rows = []
+
         for r in rows:
             data_rows.append([
                 r["id"],
@@ -2683,14 +2994,21 @@ def register_routes(app):
             "income.csv",
             data_rows,
             [
-                "ID", "Title", "Category", "Amount", "Date",
-                "Source", "Family Member", "Tags", "Notes",
+                "ID",
+                "Title",
+                "Category",
+                "Amount",
+                "Date",
+                "Source",
+                "Family Member",
+                "Tags",
+                "Notes",
             ],
         )
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
     # Budgets
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
 
     @app.get("/api/budgets")
     @api_login_required
@@ -2704,6 +3022,7 @@ def register_routes(app):
         if period:
             if period not in {"monthly", "yearly"}:
                 raise ValidationError("Invalid period")
+
             sql += " AND period=?"
             params.append(period)
 
@@ -2714,6 +3033,7 @@ def register_routes(app):
         sql += " ORDER BY category, member"
 
         conn = get_db()
+
         items = rows_to_list(conn.execute(sql, params).fetchall())
 
         for item in items:
@@ -2753,6 +3073,7 @@ def register_routes(app):
             )
 
         audit("budget_created", "budget", category)
+
         return jsonify({"success": True})
 
     @app.put("/api/budgets/<int:bud_id>")
@@ -2790,6 +3111,7 @@ def register_routes(app):
             )
 
         audit("budget_updated", "budget", bud_id)
+
         return jsonify({"success": True})
 
     @app.delete("/api/budgets/<int:bud_id>")
@@ -2799,16 +3121,18 @@ def register_routes(app):
             conn.execute("DELETE FROM budgets WHERE id=?", (bud_id,))
 
         audit("budget_deleted", "budget", bud_id)
+
         return jsonify({"success": True})
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
     # Goals
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
 
     @app.get("/api/goals")
     @api_login_required
     def goals_list():
         conn = get_db()
+
         items = rows_to_list(conn.execute(
             "SELECT * FROM goals WHERE is_active=1 ORDER BY name"
         ).fetchall())
@@ -2828,10 +3152,12 @@ def register_routes(app):
         data = json_payload()
 
         name = str(data.get("name") or "").strip()
+
         if not name:
             raise ValidationError("Goal name is required")
 
         target_cents = parse_amount_from_data(data, "target", allow_zero=False)
+
         current_cents = parse_amount_from_data(
             data,
             field="current",
@@ -2857,6 +3183,7 @@ def register_routes(app):
             )
 
         audit("goal_created", "goal", name)
+
         return jsonify({"success": True})
 
     @app.put("/api/goals/<int:gid>")
@@ -2865,10 +3192,12 @@ def register_routes(app):
         data = json_payload()
 
         name = str(data.get("name") or "").strip()
+
         if not name:
             raise ValidationError("Goal name is required")
 
         target_cents = parse_amount_from_data(data, "target", allow_zero=False)
+
         current_cents = parse_amount_from_data(
             data,
             field="current",
@@ -2897,15 +3226,18 @@ def register_routes(app):
             )
 
         audit("goal_updated", "goal", gid)
+
         return jsonify({"success": True})
 
     @app.post("/api/goals/<int:gid>/contribute")
     @require_roles("Admin", "Editor")
     def goal_contribute(gid):
         data = json_payload()
+
         amount_cents = parse_amount_from_data(data, "amount", allow_zero=False)
 
         conn = get_db()
+
         goal = conn.execute("SELECT * FROM goals WHERE id=?", (gid,)).fetchone()
 
         if not goal:
@@ -2920,6 +3252,7 @@ def register_routes(app):
             )
 
         audit("goal_contribution", "goal", gid, str(amount_cents))
+
         return jsonify({"success": True})
 
     @app.delete("/api/goals/<int:gid>")
@@ -2929,16 +3262,18 @@ def register_routes(app):
             conn.execute("UPDATE goals SET is_active=0 WHERE id=?", (gid,))
 
         audit("goal_deactivated", "goal", gid)
+
         return jsonify({"success": True})
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
     # Recurring rules
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
 
     @app.get("/api/recurring")
     @api_login_required
     def recurring_list():
         conn = get_db()
+
         items = rows_to_list(conn.execute(
             "SELECT * FROM recurring_rules ORDER BY next_run_date"
         ).fetchall())
@@ -2982,7 +3317,12 @@ def register_routes(app):
             conn.execute(
                 """
                 INSERT INTO recurring_rules (
-                    name, entity_type, payload, frequency, interval_value, next_run_date
+                    name,
+                    entity_type,
+                    payload,
+                    frequency,
+                    interval_value,
+                    next_run_date
                 ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
@@ -2996,6 +3336,7 @@ def register_routes(app):
             )
 
         audit("recurring_created", "recurring", name)
+
         return jsonify({"success": True})
 
     @app.put("/api/recurring/<int:rid>")
@@ -3047,6 +3388,7 @@ def register_routes(app):
             )
 
         audit("recurring_updated", "recurring", rid)
+
         return jsonify({"success": True})
 
     @app.delete("/api/recurring/<int:rid>")
@@ -3056,6 +3398,7 @@ def register_routes(app):
             conn.execute("DELETE FROM recurring_rules WHERE id=?", (rid,))
 
         audit("recurring_deleted", "recurring", rid)
+
         return jsonify({"success": True})
 
     @app.post("/api/recurring/run")
@@ -3074,13 +3417,16 @@ def register_routes(app):
                 (today,),
             ).fetchall()
 
-            for rule in rules:
+            for rule_row in rules:
+                rule = dict(rule_row)
+
                 # Catch-up guard: do not create more than 24 items per rule in one run.
                 for _ in range(24):
                     if rule["next_run_date"] > today:
                         break
 
                     payload = {}
+
                     try:
                         payload = json.loads(rule["payload"])
                     except Exception:
@@ -3102,8 +3448,8 @@ def register_routes(app):
                     elif rule["entity_type"] == "bill":
                         payload.setdefault("bill_date", rule["next_run_date"])
                         payload.setdefault("due_date", rule["next_run_date"])
-                        parsed_bill = parse_bill_payload(payload)
 
+                        parsed_bill = parse_bill_payload(payload)
                         settings = load_settings()
                         bill_number = next_bill_number(conn, settings.get("bill_prefix", "BILL"))
 
@@ -3115,6 +3461,7 @@ def register_routes(app):
                             status="Pending",
                             paid_at=None,
                         )
+
                         created.append({"entity_type": "bill", "id": entity_id})
 
                     new_next_run_date = advance_recurring_date(
@@ -3132,8 +3479,6 @@ def register_routes(app):
                         (new_next_run_date, rule["next_run_date"], rule["id"]),
                     )
 
-                    # Refresh rule date for catch-up loop
-                    rule = dict(rule)
                     rule["next_run_date"] = new_next_run_date
 
                 notify(
@@ -3143,11 +3488,12 @@ def register_routes(app):
                 )
 
         audit("recurring_run", "recurring", "", f"Created {len(created)} item(s)")
+
         return jsonify({"success": True, "created": created})
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
     # Notifications
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
 
     @app.get("/api/notifications")
     @api_login_required
@@ -3156,6 +3502,7 @@ def register_routes(app):
         conn = get_db()
 
         total = conn.execute("SELECT COUNT(*) FROM notifications").fetchone()[0]
+
         rows = conn.execute(
             """
             SELECT * FROM notifications
@@ -3191,9 +3538,9 @@ def register_routes(app):
 
         return jsonify({"success": True})
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
     # Dashboard
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
 
     @app.get("/api/dashboard")
     @api_login_required
@@ -3234,10 +3581,10 @@ def register_routes(app):
         ).fetchone()[0]
 
         monthly_bill_payment_cents = conn.execute(
-            """
-            SELECT COALESCE(SUM(amount_cents), 0)
-            FROM bill_payments
-            WHERE payment_date >= ? AND payment_date < ?
+            f"""
+            SELECT COALESCE(SUM(bp.amount_cents), 0)
+            {VALID_BILL_PAYMENT_FROM}
+            WHERE bp.payment_date >= ? AND bp.payment_date < ?
             """,
             (month_start_iso, next_month_iso),
         ).fetchone()[0]
@@ -3303,10 +3650,10 @@ def register_routes(app):
         ).fetchone()[0]
 
         annual_bill_payment_cents = conn.execute(
-            """
-            SELECT COALESCE(SUM(amount_cents), 0)
-            FROM bill_payments
-            WHERE payment_date >= ? AND payment_date < ?
+            f"""
+            SELECT COALESCE(SUM(bp.amount_cents), 0)
+            {VALID_BILL_PAYMENT_FROM}
+            WHERE bp.payment_date >= ? AND bp.payment_date < ?
             """,
             (year_start_iso, next_year_iso),
         ).fetchone()[0]
@@ -3337,10 +3684,10 @@ def register_routes(app):
             ).fetchone()[0]
 
             bp = conn.execute(
-                """
-                SELECT COALESCE(SUM(amount_cents),0)
-                FROM bill_payments
-                WHERE strftime('%Y-%m', payment_date)=?
+                f"""
+                SELECT COALESCE(SUM(bp.amount_cents),0)
+                {VALID_BILL_PAYMENT_FROM}
+                WHERE strftime('%Y-%m', bp.payment_date)=?
                 """,
                 (m,),
             ).fetchone()[0]
@@ -3412,10 +3759,9 @@ def register_routes(app):
             """,
             (this_month,),
         ).fetchone()[0] + conn.execute(
-            """
+            f"""
             SELECT COALESCE(SUM(bp.amount_cents),0)
-            FROM bill_payments bp
-            JOIN bills b ON b.id = bp.bill_id AND b.is_deleted=0
+            {VALID_BILL_PAYMENT_FROM}
             WHERE strftime('%Y-%m', bp.payment_date)=?
             """,
             (this_month,),
@@ -3437,36 +3783,30 @@ def register_routes(app):
             "monthly_expenses": cents_to_float(monthly_outflow_cents),
             "monthly_savings": cents_to_float(monthly_savings_cents),
             "savings_rate": savings_rate,
-
             "pending_bills": cents_to_float(pending_bills_cents),
             "overdue_count": overdue_count,
             "overdue_amount": cents_to_float(overdue_amount_cents),
-
             "payee_count": payee_count,
             "bill_count": bill_count,
             "income_count": income_count,
             "expense_count": expense_count,
-
             "annual_income": cents_to_float(annual_income_cents),
             "annual_expenses": cents_to_float(annual_expense_cents + annual_bill_payment_cents),
-
             "monthly": monthly,
             "top_cats": top_cats,
             "recent_expenses": recent_expenses,
             "recent_income": recent_income,
-
             "budget_summary": {
                 "monthly_budget": cents_to_float(monthly_budget_cents),
                 "monthly_actual": cents_to_float(monthly_budget_actual_cents),
                 "monthly_remaining": cents_to_float(monthly_budget_cents - monthly_budget_actual_cents),
             },
-
             "goals": active_goals,
         })
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
     # Reports
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
 
     @app.get("/api/reports")
     @api_login_required
@@ -3477,8 +3817,11 @@ def register_routes(app):
             raise ValidationError("year must be YYYY")
 
         conn = get_db()
-        month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                       "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+        month_names = [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+        ]
 
         monthly = []
 
@@ -3504,10 +3847,10 @@ def register_routes(app):
             ).fetchone()[0]
 
             bp = conn.execute(
-                """
-                SELECT COALESCE(SUM(amount_cents),0)
-                FROM bill_payments
-                WHERE strftime('%Y-%m', payment_date)=?
+                f"""
+                SELECT COALESCE(SUM(bp.amount_cents),0)
+                {VALID_BILL_PAYMENT_FROM}
+                WHERE strftime('%Y-%m', bp.payment_date)=?
                 """,
                 (month_key,),
             ).fetchone()[0]
@@ -3547,10 +3890,9 @@ def register_routes(app):
         ).fetchall())
 
         bill_cats = rows_to_list(conn.execute(
-            """
+            f"""
             SELECT b.bill_category AS category, SUM(bp.amount_cents) AS total_cents
-            FROM bill_payments bp
-            JOIN bills b ON b.id = bp.bill_id AND b.is_deleted=0
+            {VALID_BILL_PAYMENT_FROM}
             WHERE strftime('%Y', bp.payment_date)=?
             GROUP BY b.bill_category
             ORDER BY total_cents DESC
@@ -3593,10 +3935,10 @@ def register_routes(app):
         ).fetchone()[0]
 
         total_bill_payments = conn.execute(
-            """
-            SELECT COALESCE(SUM(amount_cents),0)
-            FROM bill_payments
-            WHERE strftime('%Y', payment_date)=?
+            f"""
+            SELECT COALESCE(SUM(bp.amount_cents),0)
+            {VALID_BILL_PAYMENT_FROM}
+            WHERE strftime('%Y', bp.payment_date)=?
             """,
             (year,),
         ).fetchone()[0]
@@ -3629,16 +3971,17 @@ def register_routes(app):
 
         bill_years = [
             r[0] for r in conn.execute(
-                """
-                SELECT DISTINCT strftime('%Y', payment_date)
-                FROM bill_payments
-                WHERE payment_date IS NOT NULL
+                f"""
+                SELECT DISTINCT strftime('%Y', bp.payment_date)
+                {VALID_BILL_PAYMENT_FROM}
+                WHERE bp.payment_date IS NOT NULL
                 ORDER BY 1 DESC
                 """
             ).fetchall() if r[0]
         ]
 
         all_years = sorted(set(income_years + expense_years + bill_years), reverse=True)
+
         if str(date.today().year) not in all_years:
             all_years.insert(0, str(date.today().year))
 
@@ -3676,7 +4019,7 @@ def register_routes(app):
             ).fetchall())
 
             actual_rows = conn.execute(
-                """
+                f"""
                 SELECT category, SUM(cents) AS actual_cents
                 FROM (
                     SELECT category, SUM(amount_cents) AS cents
@@ -3687,8 +4030,7 @@ def register_routes(app):
                     UNION ALL
 
                     SELECT b.bill_category AS category, SUM(bp.amount_cents) AS cents
-                    FROM bill_payments bp
-                    JOIN bills b ON b.id = bp.bill_id AND b.is_deleted=0
+                    {VALID_BILL_PAYMENT_FROM}
                     WHERE strftime('%Y-%m', bp.payment_date)=?
                     GROUP BY b.bill_category
                 )
@@ -3708,7 +4050,7 @@ def register_routes(app):
             ).fetchall())
 
             actual_rows = conn.execute(
-                """
+                f"""
                 SELECT category, SUM(cents) AS actual_cents
                 FROM (
                     SELECT category, SUM(amount_cents) AS cents
@@ -3719,8 +4061,7 @@ def register_routes(app):
                     UNION ALL
 
                     SELECT b.bill_category AS category, SUM(bp.amount_cents) AS cents
-                    FROM bill_payments bp
-                    JOIN bills b ON b.id = bp.bill_id AND b.is_deleted=0
+                    {VALID_BILL_PAYMENT_FROM}
                     WHERE strftime('%Y', bp.payment_date)=?
                     GROUP BY b.bill_category
                 )
@@ -3734,6 +4075,7 @@ def register_routes(app):
         }
 
         result = []
+
         for budget in budgets:
             actual_cents = actual_by_category.get(budget["category"], 0)
             remaining_cents = budget["amount_cents"] - actual_cents
@@ -3759,9 +4101,10 @@ def register_routes(app):
     @api_login_required
     def report_cash_flow():
         months = min(max(int(request.args.get("months", 6)), 1), 24)
-        conn = get_db()
 
+        conn = get_db()
         current_month_start = date.today().replace(day=1)
+
         result = []
 
         for i in range(months - 1, -1, -1):
@@ -3787,10 +4130,10 @@ def register_routes(app):
             ).fetchone()[0]
 
             bill_payments = conn.execute(
-                """
-                SELECT COALESCE(SUM(amount_cents),0)
-                FROM bill_payments
-                WHERE strftime('%Y-%m', payment_date)=?
+                f"""
+                SELECT COALESCE(SUM(bp.amount_cents),0)
+                {VALID_BILL_PAYMENT_FROM}
+                WHERE strftime('%Y-%m', bp.payment_date)=?
                 """,
                 (month_key,),
             ).fetchone()[0]
@@ -3821,13 +4164,12 @@ def register_routes(app):
         conn = get_db()
 
         rows = conn.execute(
-            """
+            f"""
             SELECT b.payee_name AS payee,
                    b.bill_category AS category,
                    COUNT(DISTINCT b.id) AS bill_count,
                    SUM(bp.amount_cents) AS paid_cents
-            FROM bill_payments bp
-            JOIN bills b ON b.id = bp.bill_id AND b.is_deleted=0
+            {VALID_BILL_PAYMENT_FROM}
             WHERE strftime('%Y', bp.payment_date)=?
             GROUP BY b.payee_name, b.bill_category
             ORDER BY paid_cents DESC
@@ -3836,6 +4178,7 @@ def register_routes(app):
         ).fetchall()
 
         items = rows_to_list(rows)
+
         for item in items:
             item["paid"] = cents_to_float(item.pop("paid_cents"))
 
@@ -3855,6 +4198,7 @@ def register_routes(app):
                    MAX(due_date) AS latest_due_date
             FROM bills
             WHERE is_deleted=0
+              AND status != 'Void'
               AND (
                     bill_category LIKE '%Subscription%'
                  OR bill_category LIKE '%Internet%'
@@ -3866,6 +4210,7 @@ def register_routes(app):
         ).fetchall()
 
         items = rows_to_list(rows)
+
         for item in items:
             item["total"] = cents_to_float(item.pop("total_cents"))
 
@@ -3875,6 +4220,7 @@ def register_routes(app):
     @api_login_required
     def report_net_worth():
         conn = get_db()
+
         accounts = rows_to_list(conn.execute(
             "SELECT * FROM accounts WHERE is_active=1 ORDER BY name"
         ).fetchall())
@@ -3882,46 +4228,29 @@ def register_routes(app):
         net_worth_cents = 0
 
         for account in accounts:
-            income_cents = conn.execute(
-                "SELECT COALESCE(SUM(amount_cents),0) FROM income WHERE is_deleted=0 AND account_id=?",
-                (account["id"],),
-            ).fetchone()[0]
-
-            expense_cents = conn.execute(
-                "SELECT COALESCE(SUM(amount_cents),0) FROM expenses WHERE is_deleted=0 AND account_id=?",
-                (account["id"],),
-            ).fetchone()[0]
-
-            payment_cents = conn.execute(
-                "SELECT COALESCE(SUM(amount_cents),0) FROM bill_payments WHERE account_id=?",
-                (account["id"],),
-            ).fetchone()[0]
-
-            balance_cents = (
-                account["opening_balance_cents"]
-                + income_cents
-                - expense_cents
-                - payment_cents
-            )
+            balance_cents, contribution_cents = compute_account_balance(conn, account)
 
             account["balance_cents"] = balance_cents
             account["balance"] = cents_to_float(balance_cents)
+            account["net_worth_cents"] = contribution_cents
+            account["net_worth"] = cents_to_float(contribution_cents)
 
-            net_worth_cents += balance_cents
+            net_worth_cents += contribution_cents
 
         return jsonify({
             "accounts": accounts,
             "net_worth": cents_to_float(net_worth_cents),
         })
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
     # Reminders
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
 
     @app.get("/api/reminders")
     @api_login_required
     def reminders():
         conn = get_db()
+
         today_str = date.today().isoformat()
         in_14_days = (date.today() + timedelta(days=14)).isoformat()
 
@@ -3954,22 +4283,21 @@ def register_routes(app):
         ).fetchall())
 
         for row in overdue + upcoming:
-            row["total_amount"] = cents_to_float(row.pop("total_cents"))
-            row["paid_amount"] = cents_to_float(row.pop("paid_cents"))
-            row["balance_amount"] = cents_to_float(row["total_cents"] if "total_cents" in row else 0)
+            total_cents = row.pop("total_cents", 0)
+            paid_cents = row.pop("paid_cents", 0)
 
-            # Recompute balance cleanly after popping values.
-            # SQLite row dict already lost cents fields, so derive from floats carefully.
-            row["balance_amount"] = round(row["total_amount"] - row["paid_amount"], 2)
+            row["total_amount"] = cents_to_float(total_cents)
+            row["paid_amount"] = cents_to_float(paid_cents)
+            row["balance_amount"] = cents_to_float(total_cents - paid_cents)
 
         return jsonify({
             "overdue": overdue,
             "upcoming": upcoming,
         })
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
     # Admin
-    # ─────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
 
     @app.get("/api/admin/backup")
     @require_roles("Admin")
@@ -3983,11 +4311,14 @@ def register_routes(app):
         try:
             src = sqlite3.connect(db_path)
             dst = sqlite3.connect(tmp_path)
+
             src.backup(dst)
+
             dst.close()
             src.close()
 
             data = Path(tmp_path).read_bytes()
+
             filename = f"familyfinance-backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}.db"
 
             audit("backup_created", "backup", filename)
@@ -4011,6 +4342,7 @@ def register_routes(app):
         conn = get_db()
 
         total = conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
+
         rows = conn.execute(
             """
             SELECT * FROM audit_logs
@@ -4028,9 +4360,9 @@ def register_routes(app):
         })
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Printable bill HTML
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 def generate_print_bill(b, items, s):
     sym = s.get("currency_symbol", "$")
@@ -4042,12 +4374,14 @@ def generate_print_bill(b, items, s):
         "Void": "#94a3b8",
     }
 
-    sc = status_colors.get(b.get("status", "Pending"), "#f59e0b")
+    status_color = status_colors.get(b.get("status", "Pending"), "#f59e0b")
 
     rows_html = ""
+
     for item in items:
         item_name = html.escape(str(item.get("item_name", "")))
         desc_val = html.escape(str(item.get("description", "")))
+
         desc = f"<br><small style='color:#64748b'>{desc_val}</small>" if desc_val else ""
 
         rows_html += f"""
@@ -4060,15 +4394,16 @@ def generate_print_bill(b, items, s):
         """
 
     discount_row = ""
+
     if int(b.get("discount_cents", 0)) > 0:
         discount_row = f"""
         <tr>
           <td>Discount ({b['discount_pct']}%)</td>
-          <td style='text-align:right;color:#f43f5e'>-{sym}{fmt_cents(b['discount_cents'])}</td>
+          <td style="text-align:right;color:#f43f5e">-{sym}{fmt_cents(b['discount_cents'])}</td>
         </tr>
         """
 
-    notes = html.escape(str(b.get("notes", "") or s.get("family_notes", "")))
+    notes = html.escape(str(b.get("notes") or s.get("family_notes", "")))
     family_name = html.escape(str(s.get("family_name", "Our Family")))
     family_address = html.escape(str(s.get("family_address", ""))).replace("\n", "<br>")
     primary_email = html.escape(str(s.get("primary_email", "")))
@@ -4084,73 +4419,45 @@ def generate_print_bill(b, items, s):
     payee_email = html.escape(str(b.get("payee_email", "")))
     payee_address = html.escape(str(b.get("payee_address", ""))).replace("\n", "<br>")
 
-    return f"""<!DOCTYPE html>
+    return f"""
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Bill {bill_number}</title>
-  <style>
-    *{{margin:0;padding:0;box-sizing:border-box}}
-    body{{font-family:system-ui,-apple-system,sans-serif;background:#fff;color:#1e293b;padding:48px;max-width:860px;margin:0 auto;font-size:14px}}
-    .header{{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:48px}}
-    .fam-name{{font-size:26px;font-weight:700;color:#0f172a;letter-spacing:-0.5px}}
-    .fam-details{{color:#64748b;margin-top:8px;line-height:1.7}}
-    .bill-label{{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:2px;color:#94a3b8;margin-bottom:4px}}
-    .bill-number{{font-size:32px;font-weight:700;color:#0f172a;text-align:right}}
-    .status-badge{{display:inline-block;padding:4px 14px;border-radius:100px;color:#fff;font-size:11px;font-weight:700;background:{sc};text-transform:uppercase;letter-spacing:0.5px;margin-top:8px}}
-    .dates{{text-align:right;color:#64748b;margin-top:12px;line-height:1.8}}
-    .dates span{{color:#1e293b;font-weight:600}}
-    .divider{{height:1px;background:#e2e8f0;margin:32px 0}}
-    .parties{{display:grid;grid-template-columns:1fr 1fr;gap:40px;margin-bottom:32px}}
-    .party-label{{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:#94a3b8;margin-bottom:10px}}
-    .party-value{{line-height:1.8;color:#1e293b}}
-    .party-value strong{{font-size:15px;font-weight:700}}
-    table{{width:100%;border-collapse:collapse;margin-bottom:24px}}
-    thead{{background:#1e1b4b}}
-    thead th{{padding:12px 16px;text-align:left;color:#fff;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px}}
-    tbody tr:nth-child(even){{background:#f8fafc}}
-    tbody td{{padding:13px 16px;border-bottom:1px solid #f1f5f9;vertical-align:top}}
-    .totals-wrap{{display:flex;justify-content:flex-end;margin-bottom:40px}}
-    .totals{{width:320px}}
-    .totals table{{margin:0}}
-    .totals td{{padding:8px 16px;color:#475569}}
-    .totals tr:last-child td{{font-size:16px;font-weight:700;color:#0f172a;border-top:2px solid #1e1b4b;padding-top:12px}}
-    .footer{{display:grid;grid-template-columns:1fr 1fr;gap:40px}}
-    .section-label{{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:#94a3b8;margin-bottom:8px}}
-    .section-value{{color:#475569;line-height:1.7}}
-    .print-btn{{position:fixed;bottom:24px;right:24px;padding:12px 24px;background:#4f46e5;color:#fff;border:none;border-radius:8px;cursor:pointer;font-family:inherit;font-size:14px;font-weight:600;box-shadow:0 4px 12px rgba(79,70,229,.3)}}
-    .print-btn:hover{{background:#4338ca}}
-    @media print{{.print-btn{{display:none}}body{{padding:20px}}}}
-  </style>
 </head>
-<body>
-  <div class="header">
+<body style="font-family:system-ui,-apple-system,sans-serif;color:#1e293b;max-width:860px;margin:0 auto;padding:32px;">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:32px;">
     <div>
-      <div class="fam-name">🏠 {family_name}</div>
-      <div class="fam-details">
+      <div style="font-size:26px;font-weight:700;">🏠 {family_name}</div>
+      <div style="color:#64748b;margin-top:8px;line-height:1.7;">
         {family_address}
         {'<br>' + primary_email if primary_email else ''}
         {'<br>' + primary_phone if primary_phone else ''}
       </div>
     </div>
 
-    <div>
-      <div class="bill-label">Bill / Payment</div>
-      <div class="bill-number">#{bill_number}</div>
-      <div style="text-align:right"><span class="status-badge">{status}</span></div>
-      <div class="dates">
-        Bill Date: <span>{bill_date}</span><br>
-        Due Date: <span>{due_date}</span><br>
-        Category: <span>{bill_category}</span>
+    <div style="text-align:right;">
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:2px;color:#94a3b8;">Bill / Payment</div>
+      <div style="font-size:32px;font-weight:700;">#{bill_number}</div>
+      <div style="margin-top:8px;">
+        <span style="display:inline-block;padding:4px 14px;border-radius:100px;color:#fff;font-size:11px;font-weight:700;background:{status_color};text-transform:uppercase;">
+          {status}
+        </span>
+      </div>
+      <div style="color:#64748b;margin-top:12px;line-height:1.8;">
+        Bill Date: <strong>{bill_date}</strong><br>
+        Due Date: <strong>{due_date}</strong><br>
+        Category: <strong>{bill_category}</strong>
       </div>
     </div>
   </div>
 
-  <div class="parties">
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:32px;margin-bottom:24px;">
     <div>
-      <div class="party-label">Billed By / Payee</div>
-      <div class="party-value">
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:#94a3b8;margin-bottom:10px;">Billed By / Payee</div>
+      <div style="line-height:1.8;">
         <strong>{payee_name}</strong><br>
         {payee_email}<br>
         {payee_address}
@@ -4158,57 +4465,78 @@ def generate_print_bill(b, items, s):
     </div>
 
     <div>
-      <div class="party-label">Category</div>
-      <div class="party-value">{bill_category}</div>
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:#94a3b8;margin-bottom:10px;">Category</div>
+      <div>{bill_category}</div>
     </div>
   </div>
 
-  <div class="divider"></div>
-
-  <table>
+  <table style="width:100%;border-collapse:collapse;margin-bottom:24px;">
     <thead>
-      <tr>
-        <th>Description</th>
-        <th style="text-align:center">Qty</th>
-        <th style="text-align:right">Unit Price</th>
-        <th style="text-align:right">Amount</th>
+      <tr style="background:#1e1b4b;color:#fff;">
+        <th style="padding:12px 16px;text-align:left;">Description</th>
+        <th style="padding:12px 16px;text-align:center;">Qty</th>
+        <th style="padding:12px 16px;text-align:right;">Unit Price</th>
+        <th style="padding:12px 16px;text-align:right;">Amount</th>
       </tr>
     </thead>
-    <tbody>{rows_html}</tbody>
+    <tbody>
+      {rows_html}
+    </tbody>
   </table>
 
-  <div class="totals-wrap">
-    <div class="totals">
-      <table>
-        <tr><td>Subtotal</td><td style="text-align:right">{sym}{fmt_cents(b['subtotal_cents'])}</td></tr>
-        {discount_row}
-        <tr><td>Tax ({b['tax_rate']}%)</td><td style="text-align:right">{sym}{fmt_cents(b['tax_cents'])}</td></tr>
-        <tr><td>Total</td><td style="text-align:right">{sym}{fmt_cents(b['total_cents'])}</td></tr>
-        <tr><td>Paid</td><td style="text-align:right">{sym}{fmt_cents(b['paid_cents'])}</td></tr>
-        <tr><td><strong>Balance Due</strong></td><td style="text-align:right">{sym}{fmt_cents(b['total_cents'] - b['paid_cents'])}</td></tr>
-      </table>
+  <div style="display:flex;justify-content:flex-end;margin-bottom:32px;">
+    <table style="width:320px;border-collapse:collapse;">
+      <tr>
+        <td style="padding:8px 16px;color:#475569;">Subtotal</td>
+        <td style="padding:8px 16px;text-align:right;">{sym}{fmt_cents(b['subtotal_cents'])}</td>
+      </tr>
+      {discount_row}
+      <tr>
+        <td style="padding:8px 16px;color:#475569;">Tax ({b['tax_rate']}%)</td>
+        <td style="padding:8px 16px;text-align:right;">{sym}{fmt_cents(b['tax_cents'])}</td>
+      </tr>
+      <tr>
+        <td style="padding:8px 16px;color:#475569;">Total</td>
+        <td style="padding:8px 16px;text-align:right;">{sym}{fmt_cents(b['total_cents'])}</td>
+      </tr>
+      <tr>
+        <td style="padding:8px 16px;color:#475569;">Paid</td>
+        <td style="padding:8px 16px;text-align:right;">{sym}{fmt_cents(b['paid_cents'])}</td>
+      </tr>
+      <tr>
+        <td style="padding:8px 16px;font-weight:700;border-top:2px solid #1e1b4b;">Balance Due</td>
+        <td style="padding:8px 16px;text-align:right;font-weight:700;border-top:2px solid #1e1b4b;">
+          {sym}{fmt_cents(b['total_cents'] - b['paid_cents'])}
+        </td>
+      </tr>
+    </table>
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:32px;">
+    <div>
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:#94a3b8;margin-bottom:8px;">Notes</div>
+      <div style="color:#475569;line-height:1.7;">{notes or 'Thank you!'}</div>
+    </div>
+
+    <div>
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:#94a3b8;margin-bottom:8px;">Currency</div>
+      <div style="color:#475569;line-height:1.7;">{s.get('currency_code','USD')} — {s.get('currency_symbol','$')}</div>
     </div>
   </div>
 
-  <div class="footer">
-    <div>
-      <div class="section-label">Notes</div>
-      <div class="section-value">{notes or 'Thank you!'}</div>
-    </div>
-    <div>
-      <div class="section-label">Currency</div>
-      <div class="section-value">{s.get('currency_code','USD')} — {s.get('currency_symbol','$')}</div>
-    </div>
+  <div style="margin-top:32px;">
+    <button onclick="window.print()" style="padding:12px 24px;background:#4f46e5;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:600;">
+      🖨️ Print / Save PDF
+    </button>
   </div>
-
-  <button class="print-btn" onclick="window.print()">🖨️ Print / Save PDF</button>
 </body>
-</html>"""
+</html>
+"""
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Entry point
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     app = create_app()
@@ -4217,10 +4545,12 @@ if __name__ == "__main__":
     port = int(os.getenv("FF_PORT", "5000"))
     debug = os.getenv("FF_DEBUG", "0") == "1"
 
-    print("\n" + "=" * 72)
+    print()
+    print("=" * 72)
     print("  🏠 FamilyFinance Enhanced — Personal & Family Budget Tracker")
     print(f"  🌐 Open: http://{host}:{port}")
     print("  🔐 Login endpoint: POST /api/auth/login")
-    print("=" * 72 + "\n")
+    print("=" * 72)
+    print()
 
     app.run(debug=debug, host=host, port=port)
