@@ -63,6 +63,7 @@ def test_login_me_and_logout(client):
 
     resp = client.get("/api/me")
     assert resp.status_code == 200
+
     data = resp.get_json()
     assert data["user"]["username"] == "admin"
     assert "csrf_token" in data
@@ -99,7 +100,7 @@ def test_expense_income_bill_budget_goal_flow(client):
     token = login(client)
     headers = auth_headers(token)
 
-    # Create income
+    # Create income.
     resp = client.post(
         "/api/income",
         headers=headers,
@@ -119,7 +120,7 @@ def test_expense_income_bill_budget_goal_flow(client):
     assert resp.status_code == 200
     assert resp.get_json()["amount_cents"] == 250000
 
-    # Create expense
+    # Create expense.
     resp = client.post(
         "/api/expenses",
         headers=headers,
@@ -139,7 +140,7 @@ def test_expense_income_bill_budget_goal_flow(client):
     assert resp.status_code == 200
     assert resp.get_json()["amount_cents"] == 4250
 
-    # Create bill
+    # Create bill.
     resp = client.post(
         "/api/bills",
         headers=headers,
@@ -164,11 +165,12 @@ def test_expense_income_bill_budget_goal_flow(client):
 
     resp = client.get(f"/api/bills/{bill_id}")
     assert resp.status_code == 200
+
     bill = resp.get_json()
     assert bill["total_cents"] == 8620
     assert bill["status"] == "Pending"
 
-    # Pay part of bill
+    # Pay part of the bill.
     resp = client.post(
         f"/api/bills/{bill_id}/pay",
         headers=headers,
@@ -185,7 +187,7 @@ def test_expense_income_bill_budget_goal_flow(client):
     assert bill["paid_cents"] == 2000
     assert bill["status"] == "Partially Paid"
 
-    # Create budget
+    # Create budget.
     resp = client.post(
         "/api/budgets",
         headers=headers,
@@ -197,7 +199,7 @@ def test_expense_income_bill_budget_goal_flow(client):
     )
     assert resp.status_code == 200
 
-    # Create goal
+    # Create goal.
     resp = client.post(
         "/api/goals",
         headers=headers,
@@ -226,7 +228,7 @@ def test_expense_income_bill_budget_goal_flow(client):
     goals = resp.get_json()
     assert goals[0]["current_cents"] == 175000
 
-    # Dashboard and reports should work
+    # Dashboard and reports should work.
     resp = client.get("/api/dashboard")
     assert resp.status_code == 200
 
@@ -252,6 +254,7 @@ def test_admin_backup_and_audit(client):
 
     resp = client.get("/api/admin/audit")
     assert resp.status_code == 200
+
     data = resp.get_json()
     assert "items" in data
     assert "total" in data
