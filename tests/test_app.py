@@ -258,3 +258,152 @@ def test_admin_backup_and_audit(client):
     data = resp.get_json()
     assert "items" in data
     assert "total" in data
+
+
+def test_household_user_management(client):
+    token = login(client)
+    headers = auth_headers(token)
+
+    # A second household login can be created with a role.
+    resp = client.post(
+        "/api/users",
+        headers=headers,
+        json={"username": "mom", "password": "momspassword1", "role": "Editor"},
+    )
+    assert resp.status_code == 200
+    mom_id = resp.get_json()["id"]
+
+    resp = client.get("/api/users", headers=headers)
+    assert resp.status_code == 200
+    usernames = {u["username"] for u in resp.get_json()}
+    assert {"admin", "mom"} <= usernames
+
+    # Duplicate usernames are rejected.
+    resp = client.post(
+        "/api/users",
+        headers=headers,
+        json={"username": "mom", "password": "whatever12", "role": "Viewer"},
+    )
+    assert resp.status_code == 400
+
+    # Passwords under 8 characters are rejected.
+    resp = client.post(
+        "/api/users",
+        headers=headers,
+        json={"username": "dad", "password": "short", "role": "Editor"},
+    )
+    assert resp.status_code == 400
+
+    # The new Editor can log in and is subject to Editor/Admin-only checks.
+    editor_client = client
+    editor_resp = editor_client.post(
+        "/api/auth/login",
+        json={"username": "mom", "password": "momspassword1"},
+    )
+    assert editor_resp.status_code == 200
+    editor_token = editor_resp.get_json()["csrf_token"]
+
+    # Editors cannot manage users.
+    resp = editor_client.get("/api/users", headers=auth_headers(editor_token))
+    assert resp.status_code == 403
+
+    # Editors can still create financial records.
+    resp = editor_client.post(
+        "/api/expenses",
+        headers=auth_headers(editor_token),
+        json={
+            "title": "Snacks",
+            "category": "Groceries & Food",
+            "amount": "12.00",
+            "expense_date": "2026-06-21",
+        },
+    )
+    assert resp.status_code == 200
+
+    # Log back in as admin to finish the lifecycle.
+    admin_token = login(client)
+    admin_headers = auth_headers(admin_token)
+
+    resp = client.put(
+        f"/api/users/{mom_id}",
+        headers=admin_headers,
+        json={"role": "Viewer"},
+    )
+    assert resp.status_code == 200
+
+    # Admins can't delete their own active account.
+    resp = client.get("/api/users", headers=admin_headers)
+    admin_id = next(u["id"] for u in resp.get_json() if u["username"] == "admin")
+    resp = client.delete(f"/api/users/{admin_id}", headers=admin_headers)
+    assert resp.status_code == 400
+
+    resp = client.delete(f"/api/users/{mom_id}", headers=admin_headers)
+    assert resp.status_code == 200
+
+
+def test_category_partial_update_toggles_active(client):
+    token = login(client)
+    headers = auth_headers(token)
+
+    resp = client.post(
+        "/api/categories",
+        headers=headers,
+        json={"name": "Home Office", "type": "expense"},
+    )
+    assert resp.status_code == 200
+
+    resp = client.get("/api/categories?type=expense&active_only=0", headers=headers)
+    cat = next(c for c in resp.get_json() if c["name"] == "Home Office")
+
+    # Toggling is_active alone (no name in the payload) should not fail
+    # and must not clear the category's name.
+    resp = client.put(
+        f"/api/categories/{cat['id']}",
+        headers=headers,
+        json={"is_active": 0},
+    )
+    assert resp.status_code == 200
+
+    resp = client.get("/api/categories?type=expense&active_only=0", headers=headers)
+    updated = next(c for c in resp.get_json() if c["id"] == cat["id"])
+    assert updated["name"] == "Home Office"
+    assert updated["is_active"] == 0
+
+
+def test_notifications_report_unread_count(client):
+    token = login(client)
+    headers = auth_headers(token)
+
+    resp = client.post(
+        "/api/recurring",
+        headers=headers,
+        json={
+            "name": "Weekly Coffee",
+            "entity_type": "expense",
+            "frequency": "weekly",
+            "interval_value": 1,
+            "next_run_date": "2026-06-01",
+            "payload": {
+                "title": "Coffee",
+                "amount": "5.00",
+                "category": "Groceries & Food",
+            },
+        },
+    )
+    assert resp.status_code == 200
+
+    resp = client.post("/api/recurring/run", headers=headers, json={})
+    assert resp.status_code == 200
+    assert len(resp.get_json()["created"]) > 0
+
+    resp = client.get("/api/notifications?limit=5", headers=headers)
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert "unread_count" in data
+    assert data["unread_count"] >= 1
+
+    resp = client.post("/api/notifications/read-all", headers=headers)
+    assert resp.status_code == 200
+
+    resp = client.get("/api/notifications?limit=5", headers=headers)
+    assert resp.get_json()["unread_count"] == 0
