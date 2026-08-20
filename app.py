@@ -1061,6 +1061,25 @@ def notify(title, body="", link="", username=""):
 # Money / transaction helpers
 # ---------------------------------------------------------------------------
 
+def ensure_reference_exists(conn, table, row_id, field_name):
+    if row_id in (None, ""):
+        return None
+
+    try:
+        clean_id = int(row_id)
+    except (TypeError, ValueError):
+        raise ValidationError(f"{field_name} is invalid")
+
+    if clean_id <= 0:
+        raise ValidationError(f"{field_name} is invalid")
+
+    row = conn.execute(f"SELECT 1 FROM {table} WHERE id=?", (clean_id,)).fetchone()
+    if row is None:
+        raise ValidationError(f"{field_name} does not exist")
+
+    return clean_id
+
+
 def parse_transaction_payload(data, date_field):
     title = str(data.get("title") or "").strip()
 
@@ -1073,7 +1092,7 @@ def parse_transaction_payload(data, date_field):
     category = str(data.get("category") or "Other").strip() or "Other"
     member = str(data.get("member") or "").strip()
     notes = str(data.get("notes") or "").strip()
-    account_id = data.get("account_id") or None
+    account_id = ensure_reference_exists(get_db(), "accounts", data.get("account_id"), "account_id")
     tags = data.get("tags") or ""
 
     if isinstance(tags, list):
@@ -1232,7 +1251,7 @@ def parse_bill_payload(data):
 
     bill_category = str(data.get("bill_category") or "Other").strip() or "Other"
     notes = str(data.get("notes") or "").strip()
-    account_id = data.get("account_id") or None
+    account_id = ensure_reference_exists(get_db(), "accounts", data.get("account_id"), "account_id")
 
     items = data.get("items") or []
 
@@ -4067,6 +4086,58 @@ def register_routes(app):
                 (goal["current_cents"] / goal["target_cents"] * 100), 1
             ) if goal["target_cents"] > 0 else 0
 
+        health_score = 100
+        recommendations = []
+
+        if savings_rate < 0:
+            health_score -= 30
+            recommendations.append({
+                "severity": "high",
+                "title": "Spending is above income this month",
+                "detail": "Review flexible categories and pause non-essential spending until cash flow is positive.",
+            })
+        elif savings_rate < 10:
+            health_score -= 15
+            recommendations.append({
+                "severity": "medium",
+                "title": "Savings rate is below 10%",
+                "detail": "Try routing a small automatic transfer to savings after each paycheck.",
+            })
+
+        settings = load_settings()
+        target_pct = float(settings.get("savings_target_pct", 20) or 20)
+        if monthly_income_cents and savings_rate < target_pct:
+            recommendations.append({
+                "severity": "info",
+                "title": "Savings target gap",
+                "detail": f"Current savings rate is {savings_rate}%; household target is {target_pct:g}%.",
+            })
+
+        if overdue_count:
+            health_score -= min(35, overdue_count * 7)
+            recommendations.append({
+                "severity": "high",
+                "title": f"{overdue_count} overdue bill{'s' if overdue_count != 1 else ''}",
+                "detail": "Prioritize overdue balances to avoid fees and service interruptions.",
+            })
+
+        if monthly_budget_cents and monthly_budget_actual_cents > monthly_budget_cents:
+            health_score -= 15
+            recommendations.append({
+                "severity": "medium",
+                "title": "Monthly budget exceeded",
+                "detail": "Compare budget categories against actual spending and adjust envelopes for the next month.",
+            })
+
+        if not recommendations:
+            recommendations.append({
+                "severity": "success",
+                "title": "Finances look steady",
+                "detail": "Keep tracking transactions and review goals weekly to maintain momentum.",
+            })
+
+        health_score = max(0, min(100, health_score))
+
         return jsonify({
             "monthly_income": cents_to_float(monthly_income_cents),
             "monthly_expenses": cents_to_float(monthly_outflow_cents),
@@ -4091,6 +4162,24 @@ def register_routes(app):
                 "monthly_remaining": cents_to_float(monthly_budget_cents - monthly_budget_actual_cents),
             },
             "goals": active_goals,
+            "financial_health": {
+                "score": health_score,
+                "status": "strong" if health_score >= 80 else "watch" if health_score >= 60 else "needs_attention",
+                "recommendations": recommendations,
+            },
+        })
+
+    @app.get("/api/insights")
+    @api_login_required
+    def insights():
+        dashboard_resp = dashboard()
+        data = dashboard_resp.get_json()
+        return jsonify({
+            "financial_health": data["financial_health"],
+            "budget_summary": data["budget_summary"],
+            "top_categories": data["top_cats"],
+            "monthly_trend": data["monthly"],
+            "goals": data["goals"],
         })
 
     # -----------------------------------------------------------------------
@@ -4765,7 +4854,7 @@ def register_routes(app):
     @require_roles("Admin", "Editor")
     def allowance_create():
         data = json_payload()
-        member_id = data.get("member_id")
+        member_id = ensure_reference_exists(get_db(), "members", data.get("member_id"), "member_id")
         if not member_id:
             raise ValidationError("member_id is required")
 
@@ -4791,7 +4880,7 @@ def register_routes(app):
     @require_roles("Admin", "Editor")
     def allowance_update(alid):
         data = json_payload()
-        member_id = data.get("member_id")
+        member_id = ensure_reference_exists(get_db(), "members", data.get("member_id"), "member_id")
         if not member_id:
             raise ValidationError("member_id is required")
 
