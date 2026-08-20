@@ -542,3 +542,62 @@ def test_csv_import_and_reports(client):
     resp = client.get("/api/expenses", headers=headers)
     assert resp.status_code == 200
     assert resp.get_json()["total"] >= 2
+
+
+def test_invalid_account_references_are_validation_errors(client):
+    token = login(client)
+    headers = auth_headers(token)
+
+    resp = client.post(
+        "/api/expenses",
+        headers=headers,
+        json={
+            "title": "Bad account",
+            "category": "Other",
+            "amount": "10.00",
+            "expense_date": "2026-06-20",
+            "account_id": 9999,
+        },
+    )
+
+    assert resp.status_code == 400
+    assert resp.get_json()["error"] == "account_id does not exist"
+
+
+def test_dashboard_and_insights_include_financial_health(client):
+    token = login(client)
+    headers = auth_headers(token)
+
+    client.post(
+        "/api/income",
+        headers=headers,
+        json={
+            "title": "Paycheck",
+            "category": "Salary / Wages",
+            "amount": "4000.00",
+            "income_date": "2026-08-01",
+        },
+    )
+    client.post(
+        "/api/expenses",
+        headers=headers,
+        json={
+            "title": "Groceries",
+            "category": "Groceries & Food",
+            "amount": "450.00",
+            "expense_date": "2026-08-05",
+        },
+    )
+
+    resp = client.get("/api/dashboard")
+    assert resp.status_code == 200
+    health = resp.get_json()["financial_health"]
+    assert 0 <= health["score"] <= 100
+    assert health["status"] in {"strong", "watch", "needs_attention"}
+    assert health["recommendations"]
+
+    resp = client.get("/api/insights")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["financial_health"] == health
+    assert "monthly_trend" in data

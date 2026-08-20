@@ -8,6 +8,8 @@ This README documents the enhanced version of the project, including session aut
 
 - **A complete frontend.** `templates/index.html` was rebuilt from the ground up as a full single-page app that covers every backend feature — previously the shipped frontend only exposed a handful of dashboard/expense/income/bill/budget/goal screens and used a small fraction of the API. It now includes Accounts, Payees, Members, Categories, Recurring Rules, the full Reports suite, Notifications, and Admin, plus edit/delete everywhere, filtering, search, pagination, and CSV export. See [Frontend](#frontend) for the full list.
 - **Household user management.** The API and schema already supported `Admin` / `Editor` / `Viewer` roles, but there was previously no way to create a second login — only the bootstrap `Admin` account could ever exist. Added `GET/POST/PUT/DELETE /api/users` (Admin-only, with guardrails against locking yourself out) so a family can actually give each member their own login. See [Managing Household Users](#managing-household-users).
+- **Financial health insights.** The dashboard now includes a `financial_health` score with actionable recommendations, and `GET /api/insights` exposes a compact snapshot for widgets, automations, or mobile clients.
+- **Safer linked records.** Transactions, bills, and allowances now validate referenced accounts or family members before writing, returning clear 400-level errors instead of relying on database constraint failures.
 - **Small correctness fixes:** `GET /api/notifications` now returns an `unread_count`; `PUT /api/categories/<id>` no longer requires re-sending the category name just to toggle `is_active`.
 
 ---
@@ -99,6 +101,7 @@ This README documents the enhanced version of the project, including session aut
 ### Reporting
 
 - Dashboard with monthly and annual summaries.
+- Financial health score and recommendations for savings, overdue bills, and budget pressure.
 - Monthly cash flow trend.
 - Expense categories.
 - Income categories.
