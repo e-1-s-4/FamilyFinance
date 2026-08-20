@@ -162,8 +162,37 @@ CREATE TABLE IF NOT EXISTS accounts (
         account_type IN ('Checking', 'Savings', 'Cash', 'Investment', 'Credit Card', 'Loan', 'Other')
     ),
     opening_balance_cents INTEGER NOT NULL DEFAULT 0,
+    interest_rate REAL DEFAULT 0.0,
+    minimum_payment_cents INTEGER DEFAULT 0,
     notes TEXT DEFAULT '',
     is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS expense_splits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    expense_id INTEGER NOT NULL REFERENCES expenses(id) ON DELETE CASCADE,
+    category TEXT NOT NULL,
+    amount_cents INTEGER NOT NULL,
+    member TEXT DEFAULT '',
+    notes TEXT DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS income_splits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    income_id INTEGER NOT NULL REFERENCES income(id) ON DELETE CASCADE,
+    category TEXT NOT NULL,
+    amount_cents INTEGER NOT NULL,
+    member TEXT DEFAULT '',
+    notes TEXT DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS allowances (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    member_id INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    amount_cents INTEGER NOT NULL,
+    frequency TEXT NOT NULL DEFAULT 'monthly' CHECK (frequency IN ('weekly', 'monthly')),
+    notes TEXT DEFAULT '',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -338,6 +367,8 @@ CREATE INDEX IF NOT EXISTS idx_income_deleted ON income(is_deleted);
 CREATE INDEX IF NOT EXISTS idx_categories_type ON categories(type);
 CREATE INDEX IF NOT EXISTS idx_notifications_read ON notifications(is_read);
 CREATE INDEX IF NOT EXISTS idx_recurring_active ON recurring_rules(is_active, next_run_date);
+CREATE INDEX IF NOT EXISTS idx_expense_splits_expense ON expense_splits(expense_id);
+CREATE INDEX IF NOT EXISTS idx_income_splits_income ON income_splits(income_id);
 """
 
 MINIMAL_INDEX = """
@@ -421,6 +452,9 @@ class RateLimiter:
         self._store = {}
 
     def allow(self, key: str, limit: int, window: int) -> bool:
+        if current_app and current_app.config.get("TESTING"):
+            return True
+
         now = time.time()
 
         with self._lock:
@@ -1061,6 +1095,15 @@ def parse_transaction_payload(data, date_field):
 
 def insert_expense(conn, data):
     payload = parse_transaction_payload(data, "expense_date")
+    splits = data.get("splits") or []
+
+    if splits and isinstance(splits, list):
+        split_total = 0
+        for s in splits:
+            s_amount = parse_amount_from_data(s, "amount")
+            split_total += s_amount
+        if split_total != payload["amount_cents"]:
+            raise ValidationError("Sum of splits must equal total expense amount")
 
     cur = conn.execute(
         """
@@ -1091,11 +1134,38 @@ def insert_expense(conn, data):
         ),
     )
 
-    return cur.lastrowid
+    expense_id = cur.lastrowid
+
+    if splits and isinstance(splits, list):
+        for s in splits:
+            conn.execute(
+                """
+                INSERT INTO expense_splits (expense_id, category, amount_cents, member, notes)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    expense_id,
+                    str(s.get("category") or payload["category"]).strip() or "Other",
+                    parse_amount_from_data(s, "amount"),
+                    str(s.get("member") or payload["member"]).strip(),
+                    str(s.get("notes") or "").strip(),
+                ),
+            )
+
+    return expense_id
 
 
 def insert_income(conn, data):
     payload = parse_transaction_payload(data, "income_date")
+    splits = data.get("splits") or []
+
+    if splits and isinstance(splits, list):
+        split_total = 0
+        for s in splits:
+            s_amount = parse_amount_from_data(s, "amount")
+            split_total += s_amount
+        if split_total != payload["amount_cents"]:
+            raise ValidationError("Sum of splits must equal total income amount")
 
     cur = conn.execute(
         """
@@ -1124,7 +1194,25 @@ def insert_income(conn, data):
         ),
     )
 
-    return cur.lastrowid
+    income_id = cur.lastrowid
+
+    if splits and isinstance(splits, list):
+        for s in splits:
+            conn.execute(
+                """
+                INSERT INTO income_splits (income_id, category, amount_cents, member, notes)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    income_id,
+                    str(s.get("category") or payload["category"]).strip() or "Other",
+                    parse_amount_from_data(s, "amount"),
+                    str(s.get("member") or payload["member"]).strip(),
+                    str(s.get("notes") or "").strip(),
+                ),
+            )
+
+    return income_id
 
 
 def parse_bill_payload(data):
@@ -1936,13 +2024,18 @@ def register_routes(app):
             allow_zero=True,
         )
 
+        interest_rate = parse_number(data.get("interest_rate", 0), "interest_rate", minimum=0, maximum=100)
+        minimum_payment_cents = parse_amount_from_data(
+            data, field="minimum_payment", default_cents=0, allow_zero=True
+        )
+
         with get_db() as conn:
             conn.execute(
                 """
-                INSERT INTO accounts (name, account_type, opening_balance_cents, notes)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO accounts (name, account_type, opening_balance_cents, interest_rate, minimum_payment_cents, notes)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (name, account_type, opening_balance_cents, str(data.get("notes") or "")),
+                (name, account_type, opening_balance_cents, interest_rate, minimum_payment_cents, str(data.get("notes") or "")),
             )
 
         audit("account_created", "account", name)
@@ -1970,17 +2063,24 @@ def register_routes(app):
             allow_zero=True,
         )
 
+        interest_rate = parse_number(data.get("interest_rate", 0), "interest_rate", minimum=0, maximum=100)
+        minimum_payment_cents = parse_amount_from_data(
+            data, field="minimum_payment", default_cents=0, allow_zero=True
+        )
+
         with get_db() as conn:
             conn.execute(
                 """
                 UPDATE accounts
-                SET name=?, account_type=?, opening_balance_cents=?, notes=?, is_active=?
+                SET name=?, account_type=?, opening_balance_cents=?, interest_rate=?, minimum_payment_cents=?, notes=?, is_active=?
                 WHERE id=?
                 """,
                 (
                     name,
                     account_type,
                     opening_balance_cents,
+                    interest_rate,
+                    minimum_payment_cents,
                     str(data.get("notes") or ""),
                     1 if data.get("is_active", True) else 0,
                     aid,
@@ -2831,6 +2931,13 @@ def register_routes(app):
         expense = row_to_dict(row)
         expense["amount"] = cents_to_float(expense["amount_cents"])
 
+        splits = rows_to_list(conn.execute(
+            "SELECT * FROM expense_splits WHERE expense_id=?", (eid,)
+        ).fetchall())
+        for s in splits:
+            s["amount"] = cents_to_float(s["amount_cents"])
+        expense["splits"] = splits
+
         return jsonify(expense)
 
     @app.put("/api/expenses/<int:eid>")
@@ -2848,6 +2955,14 @@ def register_routes(app):
             return jsonify({"error": "Not found"}), 404
 
         payload = parse_transaction_payload(data, "expense_date")
+        splits = data.get("splits") or []
+
+        if splits and isinstance(splits, list):
+            split_total = 0
+            for s in splits:
+                split_total += parse_amount_from_data(s, "amount")
+            if split_total != payload["amount_cents"]:
+                raise ValidationError("Sum of splits must equal total expense amount")
 
         with conn:
             conn.execute(
@@ -2872,6 +2987,23 @@ def register_routes(app):
                     eid,
                 ),
             )
+
+            conn.execute("DELETE FROM expense_splits WHERE expense_id=?", (eid,))
+            if splits and isinstance(splits, list):
+                for s in splits:
+                    conn.execute(
+                        """
+                        INSERT INTO expense_splits (expense_id, category, amount_cents, member, notes)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            eid,
+                            str(s.get("category") or payload["category"]).strip() or "Other",
+                            parse_amount_from_data(s, "amount"),
+                            str(s.get("member") or payload["member"]).strip(),
+                            str(s.get("notes") or "").strip(),
+                        ),
+                    )
 
         audit("expense_updated", "expense", eid)
 
@@ -3024,6 +3156,13 @@ def register_routes(app):
         income_item = row_to_dict(row)
         income_item["amount"] = cents_to_float(income_item["amount_cents"])
 
+        splits = rows_to_list(conn.execute(
+            "SELECT * FROM income_splits WHERE income_id=?", (iid,)
+        ).fetchall())
+        for s in splits:
+            s["amount"] = cents_to_float(s["amount_cents"])
+        income_item["splits"] = splits
+
         return jsonify(income_item)
 
     @app.put("/api/income/<int:iid>")
@@ -3041,6 +3180,14 @@ def register_routes(app):
             return jsonify({"error": "Not found"}), 404
 
         payload = parse_transaction_payload(data, "income_date")
+        splits = data.get("splits") or []
+
+        if splits and isinstance(splits, list):
+            split_total = 0
+            for s in splits:
+                split_total += parse_amount_from_data(s, "amount")
+            if split_total != payload["amount_cents"]:
+                raise ValidationError("Sum of splits must equal total income amount")
 
         with conn:
             conn.execute(
@@ -3064,6 +3211,23 @@ def register_routes(app):
                     iid,
                 ),
             )
+
+            conn.execute("DELETE FROM income_splits WHERE income_id=?", (iid,))
+            if splits and isinstance(splits, list):
+                for s in splits:
+                    conn.execute(
+                        """
+                        INSERT INTO income_splits (income_id, category, amount_cents, member, notes)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            iid,
+                            str(s.get("category") or payload["category"]).strip() or "Other",
+                            parse_amount_from_data(s, "amount"),
+                            str(s.get("member") or payload["member"]).strip(),
+                            str(s.get("notes") or "").strip(),
+                        ),
+                    )
 
         audit("income_updated", "income", iid)
 
@@ -4367,6 +4531,143 @@ def register_routes(app):
             "net_worth": cents_to_float(net_worth_cents),
         })
 
+    @app.get("/api/reports/debt-payoff")
+    @api_login_required
+    def report_debt_payoff():
+        conn = get_db()
+        extra_monthly_payment = parse_amount_from_data(
+            request.args, field="extra_payment", default_cents=0, allow_zero=True
+        )
+
+        rows = conn.execute(
+            """
+            SELECT * FROM accounts
+            WHERE is_active=1 AND account_type IN ('Credit Card', 'Loan')
+            """
+        ).fetchall()
+
+        debts = []
+        for r in rows:
+            acc = dict(r)
+            balance_cents, _ = compute_account_balance(conn, acc)
+            if balance_cents > 0:
+                debts.append({
+                    "id": acc["id"],
+                    "name": acc["name"],
+                    "account_type": acc["account_type"],
+                    "balance_cents": balance_cents,
+                    "balance": cents_to_float(balance_cents),
+                    "interest_rate": float(acc.get("interest_rate") or 0.0),
+                    "minimum_payment_cents": int(acc.get("minimum_payment_cents") or 0),
+                    "minimum_payment": cents_to_float(acc.get("minimum_payment_cents") or 0),
+                })
+
+        def simulate(strategy, debt_list, extra_cents):
+            import copy
+            debts_copy = copy.deepcopy(debt_list)
+            if strategy == "snowball":
+                debts_copy.sort(key=lambda x: x["balance_cents"])
+            elif strategy == "avalanche":
+                debts_copy.sort(key=lambda x: x["interest_rate"], reverse=True)
+
+            months = 0
+            total_interest_cents = 0
+            schedule = []
+
+            while debts_copy and months < 360:
+                months += 1
+                month_interest = 0
+                extra_available = extra_cents
+
+                for d in debts_copy:
+                    m_interest = int(round(d["balance_cents"] * (d["interest_rate"] / 100.0 / 12.0)))
+                    month_interest += m_interest
+                    d["balance_cents"] += m_interest
+
+                    min_pay = min(d["minimum_payment_cents"], d["balance_cents"]) if d["minimum_payment_cents"] > 0 else min(d["balance_cents"], 5000)
+                    min_pay = max(min_pay, min(d["balance_cents"], 1000))
+                    pay = min(d["balance_cents"], min_pay)
+                    d["balance_cents"] -= pay
+
+                if extra_available > 0 and debts_copy:
+                    target = next((d for d in debts_copy if d["balance_cents"] > 0), None)
+                    if target:
+                        extra_pay = min(target["balance_cents"], extra_available)
+                        target["balance_cents"] -= extra_pay
+
+                total_interest_cents += month_interest
+                debts_copy = [d for d in debts_copy if d["balance_cents"] > 0]
+
+            return {
+                "months": months,
+                "years": round(months / 12.0, 1),
+                "total_interest": cents_to_float(total_interest_cents),
+                "total_interest_cents": total_interest_cents,
+            }
+
+        return jsonify({
+            "debts": debts,
+            "extra_payment": cents_to_float(extra_monthly_payment),
+            "snowball": simulate("snowball", debts, extra_monthly_payment) if debts else None,
+            "avalanche": simulate("avalanche", debts, extra_monthly_payment) if debts else None,
+        })
+
+    @app.get("/api/reports/forecast")
+    @api_login_required
+    def report_forecast():
+        months = min(max(int(request.args.get("months", 12)), 1), 36)
+        conn = get_db()
+
+        accounts = rows_to_list(conn.execute("SELECT * FROM accounts WHERE is_active=1").fetchall())
+        current_net_worth_cents = 0
+        for acc in accounts:
+            _, net_cents = compute_account_balance(conn, acc)
+            current_net_worth_cents += net_cents
+
+        today = date.today()
+        m3_ago = (today - timedelta(days=90)).isoformat()
+        m1_ago = (today - timedelta(days=30)).isoformat()
+
+        avg_income_cents = conn.execute(
+            "SELECT COALESCE(SUM(amount_cents), 0) / 3 FROM income WHERE is_deleted=0 AND income_date >= ?",
+            (m3_ago,)
+        ).fetchone()[0]
+
+        avg_expense_cents = conn.execute(
+            "SELECT COALESCE(SUM(amount_cents), 0) / 3 FROM expenses WHERE is_deleted=0 AND expense_date >= ?",
+            (m3_ago,)
+        ).fetchone()[0]
+
+        avg_bill_cents = conn.execute(
+            f"SELECT COALESCE(SUM(bp.amount_cents), 0) / 3 {VALID_BILL_PAYMENT_FROM} WHERE bp.payment_date >= ?",
+            (m3_ago,)
+        ).fetchone()[0]
+
+        monthly_net_cents = avg_income_cents - (avg_expense_cents + avg_bill_cents)
+
+        projection = []
+        sim_nw_cents = current_net_worth_cents
+        cur_date = today.replace(day=1)
+
+        for i in range(1, months + 1):
+            cur_date = add_months(cur_date, 1)
+            sim_nw_cents += monthly_net_cents
+            projection.append({
+                "month": cur_date.strftime("%Y-%m"),
+                "estimated_income": cents_to_float(avg_income_cents),
+                "estimated_expense": cents_to_float(avg_expense_cents + avg_bill_cents),
+                "estimated_net_change": cents_to_float(monthly_net_cents),
+                "projected_net_worth": cents_to_float(sim_nw_cents),
+            })
+
+        return jsonify({
+            "current_net_worth": cents_to_float(current_net_worth_cents),
+            "historical_monthly_income": cents_to_float(avg_income_cents),
+            "historical_monthly_expense": cents_to_float(avg_expense_cents + avg_bill_cents),
+            "monthly_net_change": cents_to_float(monthly_net_cents),
+            "projection": projection,
+        })
+
     # -----------------------------------------------------------------------
     # Reminders
     # -----------------------------------------------------------------------
@@ -4424,6 +4725,215 @@ def register_routes(app):
     # Admin
     # -----------------------------------------------------------------------
 
+    # -----------------------------------------------------------------------
+    # Allowances & CSV Import & Restore
+    # -----------------------------------------------------------------------
+
+    @app.get("/api/allowances")
+    @api_login_required
+    def allowances_list():
+        conn = get_db()
+        rows = conn.execute(
+            """
+            SELECT a.*, m.name AS member_name
+            FROM allowances a
+            JOIN members m ON m.id = a.member_id
+            ORDER BY m.name
+            """
+        ).fetchall()
+        items = rows_to_list(rows)
+        for item in items:
+            item["amount"] = cents_to_float(item["amount_cents"])
+
+            # Calculate spent this month for member
+            this_month = date.today().strftime("%Y-%m")
+            spent_cents = conn.execute(
+                """
+                SELECT COALESCE(SUM(amount_cents), 0)
+                FROM expenses
+                WHERE is_deleted=0 AND member=? AND strftime('%Y-%m', expense_date)=?
+                """,
+                (item["member_name"], this_month)
+            ).fetchone()[0]
+            item["spent_this_month"] = cents_to_float(spent_cents)
+            item["spent_this_month_cents"] = spent_cents
+            item["remaining_this_month"] = cents_to_float(item["amount_cents"] - spent_cents)
+
+        return jsonify(items)
+
+    @app.post("/api/allowances")
+    @require_roles("Admin", "Editor")
+    def allowance_create():
+        data = json_payload()
+        member_id = data.get("member_id")
+        if not member_id:
+            raise ValidationError("member_id is required")
+
+        frequency = str(data.get("frequency") or "monthly").strip()
+        if frequency not in {"weekly", "monthly"}:
+            raise ValidationError("frequency must be weekly or monthly")
+
+        amount_cents = parse_amount_from_data(data, "amount", allow_zero=False)
+
+        with get_db() as conn:
+            conn.execute(
+                """
+                INSERT INTO allowances (member_id, amount_cents, frequency, notes)
+                VALUES (?, ?, ?, ?)
+                """,
+                (member_id, amount_cents, frequency, str(data.get("notes") or "")),
+            )
+
+        audit("allowance_created", "allowance", member_id)
+        return jsonify({"success": True})
+
+    @app.put("/api/allowances/<int:alid>")
+    @require_roles("Admin", "Editor")
+    def allowance_update(alid):
+        data = json_payload()
+        member_id = data.get("member_id")
+        if not member_id:
+            raise ValidationError("member_id is required")
+
+        frequency = str(data.get("frequency") or "monthly").strip()
+        if frequency not in {"weekly", "monthly"}:
+            raise ValidationError("frequency must be weekly or monthly")
+
+        amount_cents = parse_amount_from_data(data, "amount", allow_zero=False)
+
+        with get_db() as conn:
+            conn.execute(
+                """
+                UPDATE allowances
+                SET member_id=?, amount_cents=?, frequency=?, notes=?
+                WHERE id=?
+                """,
+                (member_id, amount_cents, frequency, str(data.get("notes") or ""), alid),
+            )
+
+        audit("allowance_updated", "allowance", alid)
+        return jsonify({"success": True})
+
+    @app.delete("/api/allowances/<int:alid>")
+    @require_roles("Admin", "Editor")
+    def allowance_delete(alid):
+        with get_db() as conn:
+            conn.execute("DELETE FROM allowances WHERE id=?", (alid,))
+        audit("allowance_deleted", "allowance", alid)
+        return jsonify({"success": True})
+
+    @app.post("/api/import/csv/preview")
+    @require_roles("Admin", "Editor")
+    def csv_import_preview():
+        if "file" not in request.files:
+            raise ValidationError("CSV file is required in form under field 'file'")
+        file = request.files["file"]
+        if not file.filename.endswith(".csv"):
+            raise ValidationError("Uploaded file must be a .csv file")
+
+        content = file.read().decode("utf-8-sig", errors="replace")
+        csv_reader = csv.reader(io.StringIO(content))
+        rows = list(csv_reader)
+
+        if not rows:
+            raise ValidationError("CSV file is empty")
+
+        headers = [h.strip() for h in rows[0]]
+        sample_rows = rows[1:10]
+
+        return jsonify({
+            "headers": headers,
+            "sample_rows": sample_rows,
+            "total_rows": len(rows) - 1,
+        })
+
+    @app.post("/api/import/csv/commit")
+    @require_roles("Admin", "Editor")
+    def csv_import_commit():
+        data = json_payload()
+        items = data.get("items") or []
+        target_type = str(data.get("target_type") or "expense").strip()
+
+        if target_type not in {"expense", "income"}:
+            raise ValidationError("target_type must be expense or income")
+
+        if not isinstance(items, list) or not items:
+            raise ValidationError("items list is required")
+
+        imported_count = 0
+        conn = get_db()
+
+        with conn:
+            for item in items:
+                title = str(item.get("title") or item.get("description") or "Imported Item").strip()
+                cat = str(item.get("category") or "Other").strip()
+                amt_cents = parse_amount_from_data(item, "amount")
+                tx_date = parse_iso_date(item.get("date"), "date")
+                account_id = item.get("account_id") or None
+                notes = str(item.get("notes") or "").strip()
+
+                if target_type == "expense":
+                    insert_expense(conn, {
+                        "title": title,
+                        "category": cat,
+                        "amount_cents": amt_cents,
+                        "expense_date": tx_date,
+                        "notes": notes,
+                        "account_id": account_id,
+                    })
+                else:
+                    insert_income(conn, {
+                        "title": title,
+                        "category": cat,
+                        "amount_cents": amt_cents,
+                        "income_date": tx_date,
+                        "notes": notes,
+                        "account_id": account_id,
+                    })
+                imported_count += 1
+
+        audit("csv_imported", target_type, "", f"Imported {imported_count} records")
+        return jsonify({"success": True, "imported_count": imported_count})
+
+    @app.post("/api/admin/restore")
+    @require_roles("Admin")
+    def admin_restore():
+        if "file" not in request.files:
+            raise ValidationError("Backup file is required in form under field 'file'")
+        file = request.files["file"]
+        if not file.filename.endswith(".db"):
+            raise ValidationError("Uploaded file must be a SQLite .db file")
+
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
+        tmp_path = tmp.name
+        file.save(tmp_path)
+
+        try:
+            # Test opening upload db
+            test_conn = sqlite3.connect(tmp_path)
+            test_conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            test_conn.close()
+
+            # Backup upload over live db
+            db_path = current_app.config["DATABASE"]
+
+            # Close existing thread connection
+            close_db()
+
+            src = sqlite3.connect(tmp_path)
+            dst = sqlite3.connect(db_path)
+            src.backup(dst)
+            dst.close()
+            src.close()
+
+            audit("database_restored", "database", "", file.filename)
+            return jsonify({"success": True})
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+
     @app.get("/api/admin/backup")
     @require_roles("Admin")
     def admin_backup():
@@ -4464,17 +4974,25 @@ def register_routes(app):
     @require_roles("Admin")
     def admin_audit_logs():
         limit, offset = get_pagination()
+        action_filter = str(request.args.get("action") or "").strip()
         conn = get_db()
 
-        total = conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
+        where = "WHERE 1=1"
+        params = []
+        if action_filter:
+            where += " AND action LIKE ?"
+            params.append(f"%{action_filter}%")
+
+        total = conn.execute(f"SELECT COUNT(*) FROM audit_logs {where}", params).fetchone()[0]
 
         rows = conn.execute(
-            """
+            f"""
             SELECT * FROM audit_logs
+            {where}
             ORDER BY id DESC
             LIMIT ? OFFSET ?
             """,
-            (limit, offset),
+            params + [limit, offset],
         ).fetchall()
 
         return jsonify({

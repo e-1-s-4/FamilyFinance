@@ -407,3 +407,105 @@ def test_notifications_report_unread_count(client):
 
     resp = client.get("/api/notifications?limit=5", headers=headers)
     assert resp.get_json()["unread_count"] == 0
+
+
+def test_split_transactions_expenses_and_income(client):
+    token = login(client)
+    headers = auth_headers(token)
+
+    # Split Expense
+    resp = client.post(
+        "/api/expenses",
+        headers=headers,
+        json={
+            "title": "Supermarket & Pharmacy",
+            "category": "Groceries & Food",
+            "amount": "100.00",
+            "expense_date": "2026-06-25",
+            "splits": [
+                {"category": "Groceries & Food", "amount": "70.00"},
+                {"category": "Healthcare & Medical", "amount": "30.00"},
+            ],
+        },
+    )
+    assert resp.status_code == 200
+    exp_id = resp.get_json()["id"]
+
+    resp = client.get(f"/api/expenses/{exp_id}", headers=headers)
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert len(data["splits"]) == 2
+    assert data["splits"][0]["amount_cents"] == 7000
+
+    # Split mismatch error
+    resp = client.post(
+        "/api/expenses",
+        headers=headers,
+        json={
+            "title": "Bad Split",
+            "category": "Groceries & Food",
+            "amount": "100.00",
+            "expense_date": "2026-06-25",
+            "splits": [
+                {"category": "Groceries & Food", "amount": "50.00"},
+            ],
+        },
+    )
+    assert resp.status_code == 400
+
+
+def test_debt_payoff_and_forecast_reports(client):
+    token = login(client)
+    headers = auth_headers(token)
+
+    # Create credit card account
+    resp = client.post(
+        "/api/accounts",
+        headers=headers,
+        json={
+            "name": "Visa Credit Card",
+            "account_type": "Credit Card",
+            "opening_balance": "1000.00",
+            "interest_rate": 18.5,
+            "minimum_payment": 50.0,
+        },
+    )
+    assert resp.status_code == 200
+
+    resp = client.get("/api/reports/debt-payoff?extra_payment=50.00", headers=headers)
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert len(data["debts"]) >= 1
+    assert data["snowball"]["months"] > 0
+    assert data["avalanche"]["months"] > 0
+
+    resp = client.get("/api/reports/forecast?months=6", headers=headers)
+    assert resp.status_code == 200
+    fc = resp.get_json()
+    assert len(fc["projection"]) == 6
+
+
+def test_allowances_crud(client):
+    token = login(client)
+    headers = auth_headers(token)
+
+    # Create member
+    m_resp = client.post("/api/members", headers=headers, json={"name": "Kid Junior"})
+    assert m_resp.status_code == 200
+
+    m_list = client.get("/api/members", headers=headers).get_json()
+    kid_id = next(m["id"] for m in m_list if m["name"] == "Kid Junior")
+
+    # Create allowance
+    resp = client.post(
+        "/api/allowances",
+        headers=headers,
+        json={"member_id": kid_id, "amount": "20.00", "frequency": "monthly"},
+    )
+    assert resp.status_code == 200
+
+    resp = client.get("/api/allowances", headers=headers)
+    assert resp.status_code == 200
+    al_list = resp.get_json()
+    assert len(al_list) == 1
+    assert al_list[0]["amount_cents"] == 2000
