@@ -439,7 +439,7 @@
   .user-chip .name { font-size: 13px; font-weight: 600; }
   .user-chip .role { font-size: 10.5px; color: var(--muted); }
 
-  .content { padding: 24px 28px 60px; max-width: 1320px; }
+  .content { padding: 24px 28px 60px; max-width: 1320px; width: 100%; }
 
   .view { animation: fadein .18s ease; }
   @keyframes fadein { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
@@ -498,10 +498,10 @@
 
   /* ---------------- Cards / grids ---------------- */
 
-  .grid { display: grid; gap: 16px; }
-  .grid.cols-4 { grid-template-columns: repeat(4, minmax(0,1fr)); }
-  .grid.cols-3 { grid-template-columns: repeat(3, minmax(0,1fr)); }
-  .grid.cols-2 { grid-template-columns: repeat(2, minmax(0,1fr)); }
+  .grid { display: grid; gap: 16px; width: 100%; }
+  .grid.cols-4 { grid-template-columns: repeat(4, minmax(200px, 1fr)); }
+  .grid.cols-3 { grid-template-columns: repeat(3, minmax(200px, 1fr)); }
+  .grid.cols-2 { grid-template-columns: repeat(2, minmax(250px, 1fr)); }
 
   .card {
     background: var(--card);
@@ -899,6 +899,8 @@
         <div class="nav-group-label">Planning</div>
         <button class="nav-btn" data-tab="recurring" onclick="showTab('recurring')"><span class="ic">↻</span> Recurring</button>
         <button class="nav-btn" data-tab="reports" onclick="showTab('reports')"><span class="ic">▲</span> Reports</button>
+        <button class="nav-btn" data-tab="debt" onclick="showTab('debt')"><span class="ic">%</span> Debt Payoff</button>
+        <button class="nav-btn" data-tab="forecast" onclick="showTab('forecast')"><span class="ic">📈</span> Forecast</button>
       </div>
 
       <div class="nav-group">
@@ -906,6 +908,7 @@
         <button class="nav-btn" data-tab="accounts" onclick="showTab('accounts')"><span class="ic">▣</span> Accounts</button>
         <button class="nav-btn" data-tab="payees" onclick="showTab('payees')"><span class="ic">☍</span> Payees</button>
         <button class="nav-btn" data-tab="members" onclick="showTab('members')"><span class="ic">☺</span> Members</button>
+        <button class="nav-btn" data-tab="allowances" onclick="showTab('allowances')"><span class="ic">🪙</span> Allowances</button>
         <button class="nav-btn" data-tab="categories" onclick="showTab('categories')"><span class="ic">▾</span> Categories</button>
       </div>
 
@@ -1025,6 +1028,7 @@
             <div><h3>Expenses</h3><div class="sub" id="expensesSub">Every dollar spent by your family</div></div>
             <div style="display:flex;gap:8px;">
               <button class="btn secondary small" onclick="exportEntity('expenses')">⇩ Export CSV</button>
+              <button class="btn secondary small role-gate" data-role="Admin,Editor" onclick="openCsvImportModal('expense')">📥 Import CSV</button>
               <button class="btn small role-gate" data-role="Admin,Editor" onclick="openExpenseModal()">+ Add Expense</button>
             </div>
           </div>
@@ -1051,6 +1055,7 @@
             <div><h3>Income</h3><div class="sub">Every dollar coming in</div></div>
             <div style="display:flex;gap:8px;">
               <button class="btn secondary small" onclick="exportEntity('income')">⇩ Export CSV</button>
+              <button class="btn secondary small role-gate" data-role="Admin,Editor" onclick="openCsvImportModal('income')">📥 Import CSV</button>
               <button class="btn small role-gate" data-role="Admin,Editor" onclick="openIncomeModal()">+ Add Income</button>
             </div>
           </div>
@@ -1261,14 +1266,49 @@
         </div>
       </section>
 
+      <!-- ============================== DEBT PAYOFF ============================== -->
+      <section id="tab-debt" class="view hidden">
+        <div class="card">
+          <div class="card-head">
+            <div><h3>Debt Payoff Planner</h3><div class="sub">Compare Snowball vs. Avalanche strategies for Credit Cards and Loans</div></div>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <span style="font-size:13px;color:var(--muted);">Extra Monthly Payment:</span>
+              <input type="number" id="debtExtraPayment" step="10" min="0" value="100" style="width:100px;padding:6px;" oninput="loadDebtPayoff()" />
+            </div>
+          </div>
+          <div class="card-pad" id="debtPayoffContent"></div>
+        </div>
+      </section>
+
+      <!-- ============================== FORECAST ============================== -->
+      <section id="tab-forecast" class="view hidden">
+        <div class="card">
+          <div class="card-head">
+            <div><h3>12-Month Net Worth Forecast</h3><div class="sub">Projections based on 90-day average cash flow</div></div>
+          </div>
+          <div class="card-pad" id="forecastContent"></div>
+        </div>
+      </section>
+
+      <!-- ============================== ALLOWANCES ============================== -->
+      <section id="tab-allowances" class="view hidden">
+        <div class="card">
+          <div class="card-head">
+            <div><h3>Family Allowances</h3><div class="sub">Monthly and weekly allowances for family members</div></div>
+            <button class="btn small role-gate" data-role="Admin,Editor" onclick="openAllowanceModal()">+ Add Allowance</button>
+          </div>
+          <div class="table-wrap" id="allowancesTable"></div>
+        </div>
+      </section>
+
       <!-- ============================== ADMIN ============================== -->
       <section id="tab-admin" class="view hidden">
         <div class="grid cols-2">
           <div class="card">
-            <div class="card-head"><div><h3>Backup</h3><div class="sub">Download a full snapshot of your database</div></div></div>
-            <div class="card-pad">
-              <p class="muted" style="font-size:13px;margin-top:0;">Creates a point-in-time copy of the SQLite database, including every table. Store it somewhere safe.</p>
+            <div class="card-head"><div><h3>Backup & Restore</h3><div class="sub">Snapshot or restore your database</div></div></div>
+            <div class="card-pad" style="display:flex;gap:12px;align-items:center;">
               <button class="btn gold" onclick="downloadBackup()">⇩ Download Backup</button>
+              <button class="btn secondary" onclick="openRestoreModal()">📤 Restore Backup</button>
             </div>
           </div>
           <div class="card">
@@ -1635,9 +1675,12 @@ function showTab(name) {
     goals: loadGoals,
     recurring: loadRecurring,
     reports: initReportsTab,
+    debt: loadDebtPayoff,
+    forecast: loadForecast,
     accounts: loadAccounts,
     payees: () => loadPayees(0),
     members: loadMembers,
+    allowances: loadAllowances,
     categories: () => loadCategories(),
     settings: loadSettingsView,
     admin: () => { loadAudit(0); loadUsers(); $("adminWhoAmI").textContent = `${state.user.username} (${state.user.role})`; },
@@ -3914,6 +3957,328 @@ async function loadAudit(offset) {
 
 function downloadBackup() {
   window.open("/api/admin/backup", "_blank");
+}
+
+/* =========================================================================
+   DEBT PAYOFF, FORECAST, ALLOWANCES, CSV IMPORT, RESTORE
+   ========================================================================= */
+
+async function loadDebtPayoff() {
+  const extra = $("debtExtraPayment").value || 0;
+  let data;
+  try {
+    data = await api(`/api/reports/debt-payoff?extra_payment=${extra}`);
+  } catch (err) { toast(err.message, "error"); return; }
+
+  if (!data.debts || !data.debts.length) {
+    $("debtPayoffContent").innerHTML = `<div class="empty-state"><div class="ic">%</div><div class="t">No active credit card or loan debts found</div><div class="b">Add a Credit Card or Loan account to start planning.</div></div>`;
+    return;
+  }
+
+  const sb = data.snowball || { months: 0, total_interest: 0 };
+  const av = data.avalanche || { months: 0, total_interest: 0 };
+
+  $("debtPayoffContent").innerHTML = `
+    <div class="grid cols-2" style="margin-bottom:20px;">
+      <div class="card card-pad" style="background:var(--paper-alt);">
+        <h4>❄️ Snowball Strategy (Smallest Balance First)</h4>
+        <div style="font-size:14px;margin-top:8px;">Time to Debt-Free: <strong>${sb.years} years (${sb.months} months)</strong></div>
+        <div style="font-size:14px;">Total Interest Paid: <strong>${fmtMoney(sb.total_interest, { plain: true })}</strong></div>
+      </div>
+      <div class="card card-pad" style="background:var(--paper-alt);">
+        <h4>🏔️ Avalanche Strategy (Highest Interest Rate First)</h4>
+        <div style="font-size:14px;margin-top:8px;">Time to Debt-Free: <strong>${av.years} years (${av.months} months)</strong></div>
+        <div style="font-size:14px;">Total Interest Paid: <strong>${fmtMoney(av.total_interest, { plain: true })}</strong></div>
+      </div>
+    </div>
+    <table class="table">
+      <thead><tr><th>Debt Account</th><th>Type</th><th>Balance</th><th>Interest Rate</th><th>Min. Payment</th></tr></thead>
+      <tbody>
+        ${data.debts.map((d) => `
+          <tr>
+            <td>${escapeHtml(d.name)}</td>
+            <td>${escapeHtml(d.account_type)}</td>
+            <td class="amt-neg">${fmtMoney(d.balance, { plain: true })}</td>
+            <td>${d.interest_rate}%</td>
+            <td>${fmtMoney(d.minimum_payment, { plain: true })}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+async function loadForecast() {
+  let data;
+  try {
+    data = await api("/api/reports/forecast?months=12");
+  } catch (err) { toast(err.message, "error"); return; }
+
+  const chartData = data.projection.map((p) => ({
+    label: p.month.slice(5),
+    values: [
+      { key: "Projected Net Worth", value: p.projected_net_worth, color: CHART_PALETTE[0] }
+    ]
+  }));
+
+  $("forecastContent").innerHTML = `
+    <div class="grid cols-3" style="margin-bottom:20px;">
+      <div class="card stat-card"><div class="label">Current Net Worth</div><div class="value">${fmtMoney(data.current_net_worth, { plain: true })}</div></div>
+      <div class="card stat-card"><div class="label">90-Day Avg. Income</div><div class="value amt-pos">${fmtMoney(data.historical_monthly_income, { plain: true })}</div></div>
+      <div class="card stat-card"><div class="label">90-Day Avg. Outflow</div><div class="value amt-neg">${fmtMoney(data.historical_monthly_expense, { plain: true })}</div></div>
+    </div>
+    <div style="margin-bottom:20px;">${groupedBarChart(chartData, { height: 220, width: 800 })}</div>
+    <table class="table">
+      <thead><tr><th>Month</th><th class="right">Est. Income</th><th class="right">Est. Expenses</th><th class="right">Est. Net Change</th><th class="right">Projected Net Worth</th></tr></thead>
+      <tbody>
+        ${data.projection.map((p) => `
+          <tr>
+            <td>${p.month}</td>
+            <td class="right amt-pos">${fmtMoney(p.estimated_income, { plain: true })}</td>
+            <td class="right amt-neg">${fmtMoney(p.estimated_expense, { plain: true })}</td>
+            <td class="right ${p.estimated_net_change >= 0 ? 'amt-pos' : 'amt-neg'}">${fmtMoney(p.estimated_net_change, { plain: true })}</td>
+            <td class="right font-bold">${fmtMoney(p.projected_net_worth, { plain: true })}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+async function loadAllowances() {
+  let items;
+  try {
+    items = await api("/api/allowances");
+  } catch (err) { toast(err.message, "error"); return; }
+
+  $("allowancesTable").innerHTML = items.length ? `
+    <table>
+      <thead><tr><th>Member</th><th>Allowance</th><th>Frequency</th><th>Spent This Month</th><th>Remaining</th><th></th></tr></thead>
+      <tbody>
+        ${items.map((a) => `
+          <tr>
+            <td>${escapeHtml(a.member_name)}</td>
+            <td>${fmtMoney(a.amount, { neutral: true })}</td>
+            <td style="text-transform:capitalize;">${escapeHtml(a.frequency)}</td>
+            <td class="amt-neg">${fmtMoney(a.spent_this_month, { plain: true })}</td>
+            <td class="${a.remaining_this_month >= 0 ? 'amt-pos' : 'amt-neg'}">${fmtMoney(a.remaining_this_month, { plain: true })}</td>
+            <td>
+              <div class="row-actions">
+                <button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="openAllowanceModal(${a.id})">Edit</button>
+                <button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="confirmDeleteAllowance(${a.id})">Delete</button>
+              </div>
+            </td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  ` : `<div class="empty-state"><div class="ic">🪙</div><div class="t">No allowances configured</div></div>`;
+
+  applyRoleGates();
+}
+
+function openAllowanceModal(id) {
+  const launch = (item) => {
+    openModal({
+      title: id ? "Edit Allowance" : "Add Allowance",
+      bodyHtml: `
+        <form id="allowanceForm" class="form-grid" onsubmit="saveAllowance(event, ${id || "null"})">
+          <div class="field"><label>Member *</label><select id="alMember">${memberOptions(item.member_id)}</select></div>
+          <div class="field"><label>Frequency *</label>
+            <select id="alFreq">
+              <option value="monthly" ${item.frequency !== "weekly" ? "selected" : ""}>Monthly</option>
+              <option value="weekly" ${item.frequency === "weekly" ? "selected" : ""}>Weekly</option>
+            </select>
+          </div>
+          <div class="field full"><label>Amount *</label><input id="alAmount" type="number" step="0.01" min="0.01" required value="${item.amount ?? ""}" /></div>
+          <div class="field full"><label>Notes</label><textarea id="alNotes">${escapeHtml(item.notes || "")}</textarea></div>
+        </form>
+      `,
+      footHtml: `<button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn" onclick="document.getElementById('allowanceForm').requestSubmit()">${id ? "Save" : "Add"}</button>`,
+    });
+  };
+
+  if (id) {
+    api("/api/allowances").then((list) => launch(list.find((a) => a.id === id) || {})).catch((err) => toast(err.message, "error"));
+  } else {
+    launch({});
+  }
+}
+
+async function saveAllowance(event, id) {
+  event.preventDefault();
+  const payload = {
+    member_id: $("alMember").value,
+    frequency: $("alFreq").value,
+    amount: $("alAmount").value,
+    notes: $("alNotes").value,
+  };
+  try {
+    if (id) await api(`/api/allowances/${id}`, "PUT", payload);
+    else await api("/api/allowances", "POST", payload);
+    closeModal();
+    toast(id ? "Allowance updated" : "Allowance created", "success");
+    loadAllowances();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+function confirmDeleteAllowance(id) {
+  confirmModal("Delete this allowance?", async () => {
+    await apiAction(() => api(`/api/allowances/${id}`, "DELETE"), "Allowance deleted");
+    loadAllowances();
+  });
+}
+
+function openCsvImportModal(targetType) {
+  openModal({
+    title: `Import CSV to ${targetType === 'expense' ? 'Expenses' : 'Income'}`,
+    wide: true,
+    bodyHtml: `
+      <div>
+        <div class="field"><label>Select Bank CSV File</label><input type="file" id="csvFileInput" accept=".csv" /></div>
+        <button class="btn secondary small" style="margin-top:10px;" onclick="previewCsvImport('${targetType}')">Preview CSV</button>
+        <div id="csvPreviewArea" style="margin-top:16px;"></div>
+      </div>
+    `,
+    footHtml: `<button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn" id="csvCommitBtn" disabled onclick="commitCsvImport('${targetType}')">Import Records</button>`,
+  });
+}
+
+let csvImportRows = [];
+
+async function previewCsvImport(targetType) {
+  const fileInput = $("csvFileInput");
+  if (!fileInput.files || !fileInput.files[0]) {
+    toast("Please select a CSV file first", "error");
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append("file", fileInput.files[0]);
+
+  try {
+    const res = await fetch("/api/import/csv/preview", {
+      method: "POST",
+      headers: { "X-CSRF-Token": state.csrf },
+      body: formData,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Preview failed");
+
+    csvImportRows = data.sample_rows;
+    $("csvPreviewArea").innerHTML = `
+      <div style="font-size:13px;margin-bottom:8px;">Found ${data.total_rows} total rows. Previewing first ${data.sample_rows.length}:</div>
+      <div class="table-wrap" style="max-height:200px;overflow-y:auto;">
+        <table>
+          <thead><tr>${data.headers.map((h) => `<th>${escapeHtml(h)}</th>`).join("")}</tr></thead>
+          <tbody>
+            ${data.sample_rows.map((r) => `<tr>${r.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`).join("")}
+          </tbody>
+        </table>
+      </div>
+    `;
+    $("csvCommitBtn").disabled = false;
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+function parseCsvLine(text) {
+  const result = [];
+  let cur = "", inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"') { inQuotes = !inQuotes; }
+    else if (c === ',' && !inQuotes) { result.push(cur.trim().replace(/^"|"$/g, "")); cur = ""; }
+    else { cur += c; }
+  }
+  result.push(cur.trim().replace(/^"|"$/g, ""));
+  return result;
+}
+
+async function commitCsvImport(targetType) {
+  const fileInput = $("csvFileInput");
+  if (!fileInput.files[0]) return;
+
+  const reader = new FileReader();
+  reader.onload = async (e) => {
+    const lines = e.target.result.split(/\r?\n/).filter((l) => l.trim());
+    if (lines.length < 2) return;
+
+    const headers = parseCsvLine(lines[0]).map((h) => h.toLowerCase());
+    const dateIdx = headers.findIndex((h) => h.includes("date"));
+    const descIdx = headers.findIndex((h) => h.includes("desc") || h.includes("payee") || h.includes("name") || h.includes("title"));
+    const amtIdx = headers.findIndex((h) => h.includes("amount") || h.includes("total") || h.includes("sum"));
+
+    const items = [];
+    for (let i = 1; i < lines.length; i++) {
+      const parts = parseCsvLine(lines[i]);
+      if (parts.length < 2) continue;
+
+      const rawAmt = Math.abs(parseFloat(parts[amtIdx >= 0 ? amtIdx : 1] || 0));
+      if (!rawAmt) continue;
+
+      items.push({
+        title: parts[descIdx >= 0 ? descIdx : 0] || "Imported Item",
+        amount: rawAmt,
+        date: parts[dateIdx >= 0 ? dateIdx : 0] || todayIso(),
+        category: "Other",
+      });
+    }
+
+    try {
+      const res = await api("/api/import/csv/commit", "POST", { target_type: targetType, items });
+      closeModal();
+      toast(`Successfully imported ${res.imported_count} records`, "success");
+      if (targetType === "expense") loadExpenses(0);
+      else loadIncome(0);
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  };
+  reader.readAsText(fileInput.files[0]);
+}
+
+function openRestoreModal() {
+  openModal({
+    title: "Restore Database Snapshot",
+    bodyHtml: `
+      <div>
+        <p class="muted" style="margin-top:0;font-size:13px;">Upload a previously downloaded <span class="kbd">.db</span> backup file to replace the active database.</p>
+        <div class="field"><label>Select Backup File (.db)</label><input type="file" id="restoreFileInput" accept=".db" /></div>
+      </div>
+    `,
+    footHtml: `<button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn danger" onclick="commitRestore()">Restore Database</button>`,
+  });
+}
+
+async function commitRestore() {
+  const fileInput = $("restoreFileInput");
+  if (!fileInput.files || !fileInput.files[0]) {
+    toast("Please select a .db backup file first", "error");
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append("file", fileInput.files[0]);
+
+  try {
+    const res = await fetch("/api/admin/restore", {
+      method: "POST",
+      headers: { "X-CSRF-Token": state.csrf },
+      body: formData,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Restore failed");
+
+    closeModal();
+    toast("Database restored successfully!", "success");
+    setTimeout(() => window.location.reload(), 1000);
+  } catch (err) {
+    toast(err.message, "error");
+  }
 }
 
 /* =========================================================================
