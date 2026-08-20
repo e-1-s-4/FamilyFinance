@@ -4,6 +4,12 @@ FamilyFinance is a personal and family-oriented budget tracking application buil
 
 This README documents the enhanced version of the project, including session authentication, CSRF protection, role support, improved money handling, budgets, goals, recurring rules, notifications, audit logs, reports, backups, and production-ready configuration options.
 
+### What's New in This Pass
+
+- **A complete frontend.** `templates/index.html` was rebuilt from the ground up as a full single-page app that covers every backend feature — previously the shipped frontend only exposed a handful of dashboard/expense/income/bill/budget/goal screens and used a small fraction of the API. It now includes Accounts, Payees, Members, Categories, Recurring Rules, the full Reports suite, Notifications, and Admin, plus edit/delete everywhere, filtering, search, pagination, and CSV export. See [Frontend](#frontend) for the full list.
+- **Household user management.** The API and schema already supported `Admin` / `Editor` / `Viewer` roles, but there was previously no way to create a second login — only the bootstrap `Admin` account could ever exist. Added `GET/POST/PUT/DELETE /api/users` (Admin-only, with guardrails against locking yourself out) so a family can actually give each member their own login. See [Managing Household Users](#managing-household-users).
+- **Small correctness fixes:** `GET /api/notifications` now returns an `unread_count`; `PUT /api/categories/<id>` no longer requires re-sending the category name just to toggle `is_active`.
+
 ---
 
 ## Table of Contents
@@ -298,23 +304,33 @@ POST /api/auth/password
 
 ## Frontend
 
-The backend is API-first.
-
-If you have a frontend, place your main template at:
+The backend is API-first, and ships with a complete, dependency-light single-page frontend at:
 
 ```text
 templates/index.html
 ```
 
-The route `/` will attempt to render:
+The route `/` renders it via `render_template("index.html")`. If the template is ever removed, a minimal API landing page is shown instead.
 
-```python
-render_template("index.html")
-```
+The bundled frontend is a single self-contained HTML file (inline CSS + vanilla JavaScript, no build step, no npm) that covers the entire API surface:
 
-If the template does not exist, a minimal API landing page is shown.
+- **Dashboard** — monthly income/spending/savings stats, a 6-month cash-flow chart, top spending categories, budget progress, goal progress, and recent activity.
+- **Expenses / Income** — full create, edit, delete, search, category/member/date filters, and CSV export.
+- **Bills** — a line-item editor (add/remove items, live subtotal/discount/tax/total preview), partial or full payments, void, print-friendly bill view, status filters, and CSV export.
+- **Budgets** — monthly/yearly budgets per category with live spent-vs-remaining progress bars.
+- **Goals** — savings goals with contribution tracking and progress bars.
+- **Recurring Rules** — automate expenses, income, or bills on a schedule, with a "run due rules now" action.
+- **Reports** — year-over-year overview, budget vs. actual, 12-month cash flow, net worth by account, detected subscriptions, and payee totals, all with lightweight inline SVG charts (no external charting library).
+- **Accounts, Payees, Members, Categories** — full management screens for every supporting entity.
+- **Notifications** — a bell menu with unread counts, generated automatically when recurring rules run.
+- **Settings** — family details, currency, and bill numbering (Admin only), plus self-service password change for any signed-in user.
+- **Admin** — household user management (add/edit/remove Admin, Editor, and Viewer logins), the audit log, and one-click database backup download.
 
-Your frontend should:
+It authenticates against `POST /api/auth/login`, relies on the `HttpOnly` session cookie for subsequent requests, and attaches the CSRF token returned at login (and refreshed via `GET /api/me`) as `X-CSRF-Token` on every `POST` / `PUT` / `DELETE` call. UI actions are gated by the signed-in user's role (see [Roles and Permissions](#roles-and-permissions)) so Viewers never see edit controls they aren't allowed to use — though the server enforces the same rules independently, since client-side gating is a convenience, not a security boundary.
+
+The visual design uses a warm "household ledger" theme (deep green + brass accents, a serif display face for headings, and tabular monospace figures for all money amounts) with a built-in light/dark toggle and a responsive layout that collapses to an off-canvas menu on small screens.
+
+If you'd rather build your own frontend against the API, the same rules apply:
 
 1. Call `POST /api/auth/login`.
 2. Store the session cookie.
@@ -734,6 +750,19 @@ Typical permission behavior:
 - Read-only API endpoints require authentication.
 - Mutating endpoints generally require `Admin` or `Editor`.
 - Settings and administrative endpoints require `Admin`.
+
+### Managing Household Users
+
+A single `Admin` account is created automatically on first run (see [First-Time Login](#first-time-login)). To add logins for other family members, use the user-management endpoints (all `Admin`-only):
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/users` | List every household login and role. |
+| `POST` | `/api/users` | Create a user: `{"username", "password", "role"}`. Password must be at least 8 characters. |
+| `PUT` | `/api/users/<id>` | Update a user's role and/or reset their password (`password` is optional; omit to leave it unchanged). |
+| `DELETE` | `/api/users/<id>` | Remove a user. |
+
+Two safety rails are enforced server-side: you can't delete or demote the last remaining `Admin` account, and you can't delete the account you're currently signed in as. The bundled frontend exposes all of this from **Admin → Household Users**.
 
 ---
 

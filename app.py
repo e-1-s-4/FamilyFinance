@@ -1541,6 +1541,120 @@ def register_routes(app):
         return jsonify({"success": True})
 
     # -----------------------------------------------------------------------
+    # Users (household logins & roles)
+    # -----------------------------------------------------------------------
+
+    VALID_USER_ROLES = ("Admin", "Editor", "Viewer")
+
+    @app.get("/api/users")
+    @require_roles("Admin")
+    def users_list():
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT id, username, role, created_at FROM users ORDER BY created_at ASC"
+        ).fetchall()
+        return jsonify(rows_to_list(rows))
+
+    @app.post("/api/users")
+    @require_roles("Admin")
+    def user_create():
+        data = json_payload()
+
+        username = str(data.get("username") or "").strip()
+        password = str(data.get("password") or "")
+        role = str(data.get("role") or "Viewer").strip()
+
+        if not username:
+            raise ValidationError("Username is required")
+        if role not in VALID_USER_ROLES:
+            raise ValidationError(f"Role must be one of: {', '.join(VALID_USER_ROLES)}")
+        if len(password) < 8:
+            raise ValidationError("Password must be at least 8 characters")
+
+        conn = get_db()
+        exists = conn.execute(
+            "SELECT 1 FROM users WHERE username=?", (username,)
+        ).fetchone()
+        if exists:
+            raise ValidationError("That username is already taken")
+
+        with conn:
+            cur = conn.execute(
+                "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+                (username, generate_password_hash(password), role),
+            )
+
+        audit("user_created", "user", cur.lastrowid, username)
+
+        return jsonify({"success": True, "id": cur.lastrowid})
+
+    @app.put("/api/users/<int:uid>")
+    @require_roles("Admin")
+    def user_update(uid):
+        data = json_payload()
+
+        conn = get_db()
+        existing = conn.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+        if existing is None:
+            return jsonify({"error": "Not found"}), 404
+
+        role = str(data.get("role") or existing["role"]).strip()
+        if role not in VALID_USER_ROLES:
+            raise ValidationError(f"Role must be one of: {', '.join(VALID_USER_ROLES)}")
+
+        if role != "Admin" and existing["role"] == "Admin":
+            remaining_admins = conn.execute(
+                "SELECT COUNT(*) FROM users WHERE role='Admin' AND id != ?", (uid,)
+            ).fetchone()[0]
+            if remaining_admins == 0:
+                raise ValidationError("At least one Admin account must remain")
+
+        new_password = str(data.get("password") or "")
+        if new_password and len(new_password) < 8:
+            raise ValidationError("Password must be at least 8 characters")
+
+        with conn:
+            if new_password:
+                conn.execute(
+                    "UPDATE users SET role=?, password_hash=? WHERE id=?",
+                    (role, generate_password_hash(new_password), uid),
+                )
+            else:
+                conn.execute("UPDATE users SET role=? WHERE id=?", (role, uid))
+
+        if session.get("username") == existing["username"]:
+            session["role"] = role
+
+        audit("user_updated", "user", uid, existing["username"])
+
+        return jsonify({"success": True})
+
+    @app.delete("/api/users/<int:uid>")
+    @require_roles("Admin")
+    def user_delete(uid):
+        conn = get_db()
+        existing = conn.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+        if existing is None:
+            return jsonify({"error": "Not found"}), 404
+
+        if existing["username"] == g.user["username"]:
+            raise ValidationError("You can't delete your own account while signed in")
+
+        if existing["role"] == "Admin":
+            remaining_admins = conn.execute(
+                "SELECT COUNT(*) FROM users WHERE role='Admin' AND id != ?", (uid,)
+            ).fetchone()[0]
+            if remaining_admins == 0:
+                raise ValidationError("At least one Admin account must remain")
+
+        with conn:
+            conn.execute("DELETE FROM users WHERE id=?", (uid,))
+
+        audit("user_deleted", "user", uid, existing["username"])
+
+        return jsonify({"success": True})
+
+    # -----------------------------------------------------------------------
     # Settings
     # -----------------------------------------------------------------------
 
@@ -1672,8 +1786,15 @@ def register_routes(app):
     def category_update(cid):
         data = json_payload()
 
-        name = str(data.get("name") or "").strip()
-        is_active = 1 if data.get("is_active", True) else 0
+        conn = get_db()
+        existing = conn.execute(
+            "SELECT * FROM categories WHERE id=?", (cid,)
+        ).fetchone()
+        if existing is None:
+            return jsonify({"error": "Not found"}), 404
+
+        name = str(data.get("name") if "name" in data else existing["name"]).strip()
+        is_active = 1 if data.get("is_active", existing["is_active"]) else 0
 
         if not name:
             raise ValidationError("Category name is required")
@@ -3502,6 +3623,9 @@ def register_routes(app):
         conn = get_db()
 
         total = conn.execute("SELECT COUNT(*) FROM notifications").fetchone()[0]
+        unread_count = conn.execute(
+            "SELECT COUNT(*) FROM notifications WHERE is_read=0"
+        ).fetchone()[0]
 
         rows = conn.execute(
             """
@@ -3515,6 +3639,7 @@ def register_routes(app):
         return jsonify({
             "items": rows_to_list(rows),
             "total": total,
+            "unread_count": unread_count,
             "limit": limit,
             "offset": offset,
         })
