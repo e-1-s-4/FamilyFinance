@@ -277,7 +277,9 @@
     background: var(--green);
     color: #EFEAD8;
     padding: 22px 16px 18px;
-    position: relative;
+    position: sticky;
+    top: 0;
+    height: 100vh;
     display: flex;
     flex-direction: column;
   }
@@ -366,7 +368,8 @@
     gap: 16px;
     padding: 16px 28px;
     border-bottom: 1px solid var(--line);
-    background: var(--paper);
+    background: color-mix(in srgb, var(--paper) 92%, transparent);
+    backdrop-filter: blur(14px);
     position: sticky;
     top: 0;
     z-index: 20;
@@ -440,7 +443,7 @@
   .user-chip .name { font-size: 13px; font-weight: 600; }
   .user-chip .role { font-size: 10.5px; color: var(--muted); }
 
-  .content { padding: 24px 28px 60px; max-width: 1320px; width: 100%; }
+  .content { padding: 24px 28px 60px; max-width: 1320px; width: 100%; margin: 0 auto; }
 
   .view { animation: fadein .18s ease; }
   @keyframes fadein { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
@@ -517,6 +520,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    flex-wrap: wrap;
     gap: 10px;
     padding: 16px 20px;
     border-bottom: 2px solid var(--gold);
@@ -612,7 +616,8 @@
   .right { text-align: right; }
   .center { text-align: center; }
 
-  .row-actions { display: flex; gap: 6px; justify-content: flex-end; }
+  .row-actions, .action-row { display: flex; gap: 6px; justify-content: flex-end; align-items: center; flex-wrap: wrap; }
+  .action-row { gap: 8px; }
 
   .empty-state {
     text-align: center;
@@ -810,6 +815,8 @@
 
   .sidebar-close { display: none; }
 
+  .dashboard-feature-grid { grid-template-columns: minmax(0, 1.4fr) minmax(280px, 1fr); }
+
   @media (max-width: 980px) {
     .app-shell { grid-template-columns: 1fr; }
 
@@ -817,6 +824,7 @@
       position: fixed;
       top: 0; left: 0; bottom: 0;
       width: 260px;
+      height: 100vh;
       z-index: 60;
       transform: translateX(-100%);
       transition: transform .2s ease;
@@ -832,11 +840,45 @@
 
     .mobile-menu-btn { display: grid; }
 
-    .grid.cols-4, .grid.cols-3, .grid.cols-2, .form-grid { grid-template-columns: 1fr; }
+    .grid.cols-4, .grid.cols-3, .grid.cols-2, .form-grid, .dashboard-feature-grid { grid-template-columns: 1fr; }
     .content { padding: 18px 14px 50px; }
     .topbar { padding: 12px 14px; }
     .item-row { grid-template-columns: 1fr 1fr; }
   }
+
+  @media (max-width: 700px) {
+    .auth-wrap { padding: 16px; }
+    .auth-card { padding: 28px 22px 24px; }
+    #pageTitle { font-size: 19px; }
+    #pageSubtitle { display: none; }
+    .topbar-right { gap: 6px; }
+    .user-chip { padding-right: 6px; }
+    .user-chip > div:last-child { display: none; }
+    .popover { position: fixed; left: 12px; right: 12px; top: 66px; width: auto; }
+    .card-head { padding: 14px 16px; align-items: flex-start; }
+    .card-head > div:last-child, .card-head > .action-row { width: 100%; justify-content: flex-start; }
+    .filter-row, .filter-row input, .filter-row select, .search-input { width: 100% !important; min-width: 0 !important; }
+    .toolbar { align-items: stretch; }
+    .toolbar > * { width: 100%; }
+    .table-wrap { overflow-x: visible; }
+    .table-wrap table, .table-wrap thead, .table-wrap tbody, .table-wrap tr, .table-wrap th, .table-wrap td { display: block; width: 100%; }
+    .table-wrap thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
+    .table-wrap tbody tr { border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--card); margin: 0 0 12px; padding: 8px 0; box-shadow: var(--shadow-sm); }
+    .table-wrap tbody tr:hover { background: var(--card); }
+    .table-wrap td { border: 0; white-space: normal; padding: 8px 14px; display: flex; justify-content: space-between; gap: 14px; text-align: right; }
+    .table-wrap td::before { content: attr(data-label); color: var(--muted); font-size: 10.5px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; text-align: left; }
+    .table-wrap td.wrap { display: block; text-align: left; }
+    .table-wrap td.wrap::before { display: block; margin-bottom: 4px; }
+    .row-actions { justify-content: flex-start; }
+    .pagination { flex-direction: column; align-items: stretch; }
+    .modal-overlay { padding: 12px; }
+    .modal-body { max-height: calc(100vh - 156px); padding: 16px; }
+    .modal-head, .modal-foot { padding: 14px 16px; }
+    .modal-foot { flex-direction: column-reverse; }
+    .modal-foot .btn { width: 100%; justify-content: center; }
+    .item-row { grid-template-columns: 1fr; }
+  }
+
 </style>
 </head>
 <body>
@@ -972,7 +1014,7 @@
       <section id="tab-dashboard" class="view">
         <div class="grid cols-4" id="dashboardStats"></div>
 
-        <div class="grid cols-2 section" style="grid-template-columns: 1.4fr 1fr;">
+        <div class="grid cols-2 section dashboard-feature-grid">
           <div class="card">
             <div class="card-head">
               <div>
@@ -1027,7 +1069,7 @@
         <div class="card">
           <div class="card-head">
             <div><h3>Expenses</h3><div class="sub" id="expensesSub">Every dollar spent by your family</div></div>
-            <div style="display:flex;gap:8px;">
+            <div class="action-row">
               <button class="btn secondary small" onclick="exportEntity('expenses')">⇩ Export CSV</button>
               <button class="btn secondary small role-gate" data-role="Admin,Editor" onclick="openCsvImportModal('expense')">📥 Import CSV</button>
               <button class="btn small role-gate" data-role="Admin,Editor" onclick="openExpenseModal()">+ Add Expense</button>
@@ -1054,7 +1096,7 @@
         <div class="card">
           <div class="card-head">
             <div><h3>Income</h3><div class="sub">Every dollar coming in</div></div>
-            <div style="display:flex;gap:8px;">
+            <div class="action-row">
               <button class="btn secondary small" onclick="exportEntity('income')">⇩ Export CSV</button>
               <button class="btn secondary small role-gate" data-role="Admin,Editor" onclick="openCsvImportModal('income')">📥 Import CSV</button>
               <button class="btn small role-gate" data-role="Admin,Editor" onclick="openIncomeModal()">+ Add Income</button>
@@ -1081,7 +1123,7 @@
         <div class="card">
           <div class="card-head">
             <div><h3>Bills</h3><div class="sub">Track what's owed and what's been paid</div></div>
-            <div style="display:flex;gap:8px;">
+            <div class="action-row">
               <button class="btn secondary small" onclick="exportEntity('bills')">⇩ Export CSV</button>
               <button class="btn small role-gate" data-role="Admin,Editor" onclick="openBillModal()">+ New Bill</button>
             </div>
@@ -1114,7 +1156,7 @@
         <div class="card">
           <div class="card-head">
             <div><h3>Budgets</h3><div class="sub">Set spending limits by category</div></div>
-            <div style="display:flex;gap:8px;">
+            <div class="action-row">
               <div class="filter-row">
                 <select id="budgetsPeriodFilter" onchange="loadBudgets()">
                   <option value="monthly">Monthly</option>
@@ -1145,7 +1187,7 @@
         <div class="card">
           <div class="card-head">
             <div><h3>Recurring Rules</h3><div class="sub">Automate expenses, income, and bills on a schedule</div></div>
-            <div style="display:flex;gap:8px;">
+            <div class="action-row">
               <button class="btn secondary small role-gate" data-role="Admin,Editor" onclick="runRecurringNow()">▶ Run Due Rules</button>
               <button class="btn small role-gate" data-role="Admin,Editor" onclick="openRecurringModal()">+ Add Rule</button>
             </div>
@@ -1272,7 +1314,7 @@
         <div class="card">
           <div class="card-head">
             <div><h3>Debt Payoff Planner</h3><div class="sub">Compare Snowball vs. Avalanche strategies for Credit Cards and Loans</div></div>
-            <div style="display:flex;gap:8px;align-items:center;">
+            <div class="action-row">
               <span style="font-size:13px;color:var(--muted);">Extra Monthly Payment:</span>
               <input type="number" id="debtExtraPayment" step="10" min="0" value="100" style="width:100px;padding:6px;" oninput="loadDebtPayoff()" />
             </div>
@@ -1597,6 +1639,25 @@ function toggleTheme() {
   html.setAttribute("data-theme", next);
   try { localStorage.setItem("ff_theme", next); } catch (e) {}
 }
+
+function enhanceResponsiveTables(root = document) {
+  root.querySelectorAll('.table-wrap table').forEach(table => {
+    const headers = [...table.querySelectorAll('thead th')].map(th => th.textContent.trim());
+    table.querySelectorAll('tbody tr').forEach(row => {
+      [...row.children].forEach((cell, index) => {
+        if (!cell.dataset.label && headers[index]) cell.dataset.label = headers[index];
+      });
+    });
+  });
+}
+
+const tableObserver = new MutationObserver(mutations => {
+  for (const mutation of mutations) {
+    mutation.addedNodes.forEach(node => {
+      if (node.nodeType === Node.ELEMENT_NODE) enhanceResponsiveTables(node);
+    });
+  }
+});
 
 function initTheme() {
   let saved = null;
@@ -4327,6 +4388,8 @@ async function commitRestore() {
    BOOTSTRAP
    ========================================================================= */
 
+tableObserver.observe(document.body, { childList: true, subtree: true });
+enhanceResponsiveTables();
 bootstrap();
 </script>
 </body>
