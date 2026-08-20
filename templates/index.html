@@ -1,1164 +1,3926 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>FamilyFinance</title>
-  <style>
-    :root {
-      --bg: #f8fafc;
-      --card: #ffffff;
-      --border: #e2e8f0;
-      --text: #0f172a;
-      --muted: #64748b;
-      --primary: #4f46e5;
-      --danger: #dc2626;
-    }
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>FamilyFinance — Household Ledger</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,500&family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #FAF7F0;
+    --paper-alt: #F1EBDC;
+    --ink: #1C2420;
+    --ink-soft: #4B554C;
+    --muted: #857E6E;
+    --line: #E1D8C3;
+    --line-soft: #EDE6D4;
+    --card: #FFFFFF;
+    --green: #1F4B3F;
+    --green-light: #2E6E5B;
+    --green-pale: #E5EEE8;
+    --gold: #A97A2C;
+    --gold-pale: #F4E9D2;
+    --rust: #9C3F2E;
+    --rust-pale: #F5E3DC;
+    --blue: #2E5C8A;
+    --blue-pale: #E4EBF3;
+    --shadow-sm: 0 1px 2px rgba(28,36,32,.05);
+    --shadow: 0 1px 2px rgba(28,36,32,.04), 0 10px 28px rgba(28,36,32,.07);
+    --radius: 14px;
+    --radius-sm: 9px;
+    --font-display: 'Fraunces', Georgia, 'Times New Roman', serif;
+    --font-body: 'Inter', system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color-scheme: light;
+  }
 
-    * {
-      box-sizing: border-box;
-    }
+  html[data-theme="dark"] {
+    --paper: #12160F;
+    --paper-alt: #171C16;
+    --ink: #ECE8DC;
+    --ink-soft: #C7C2AF;
+    --muted: #8D8A79;
+    --line: #2B3129;
+    --line-soft: #222720;
+    --card: #181E19;
+    --green: #63BC9E;
+    --green-light: #86D3B9;
+    --green-pale: #1B2E27;
+    --gold: #E0B160;
+    --gold-pale: #2E2717;
+    --rust: #E2937C;
+    --rust-pale: #34211D;
+    --blue: #8FB2DE;
+    --blue-pale: #1C2634;
+    --shadow-sm: 0 1px 2px rgba(0,0,0,.3);
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 10px 28px rgba(0,0,0,.45);
+    color-scheme: dark;
+  }
 
-    body {
-      margin: 0;
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: var(--bg);
-      color: var(--text);
-    }
+  * { box-sizing: border-box; }
 
-    button,
-    input,
-    select,
-    textarea {
-      font: inherit;
-    }
+  html, body {
+    height: 100%;
+  }
 
-    .hidden {
-      display: none !important;
-    }
+  body {
+    margin: 0;
+    font-family: var(--font-body);
+    background: var(--paper);
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+    transition: background .2s ease, color .2s ease;
+  }
 
-    .auth-wrap {
-      min-height: 100vh;
-      display: grid;
-      place-items: center;
-      padding: 24px;
-    }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+  }
 
-    .card {
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 20px;
-      box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
-    }
+  a { color: inherit; }
 
-    .auth-card {
-      width: 100%;
-      max-width: 420px;
-    }
+  button, input, select, textarea { font: inherit; color: inherit; }
 
-    h1,
-    h2,
-    h3 {
-      margin-top: 0;
-    }
+  .hidden { display: none !important; }
 
-    .muted {
-      color: var(--muted);
-    }
+  .num {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+  }
 
-    .app-shell {
-      min-height: 100vh;
-      display: grid;
-      grid-template-columns: 230px 1fr;
-    }
+  .amt-pos { color: var(--green); }
+  .amt-neg { color: var(--rust); }
+
+  ::selection { background: var(--gold-pale); }
+
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+
+  /* ---------------- Auth screen ---------------- */
+
+  .auth-wrap {
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background:
+      radial-gradient(circle at 15% 10%, var(--green-pale), transparent 45%),
+      radial-gradient(circle at 85% 90%, var(--gold-pale), transparent 40%),
+      var(--paper);
+  }
+
+  .auth-card {
+    width: 100%;
+    max-width: 400px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 36px 32px 30px;
+    box-shadow: var(--shadow);
+    position: relative;
+  }
+
+  .auth-mark {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 22px;
+  }
+
+  .ledger-icon {
+    width: 34px; height: 34px;
+    border-radius: 8px;
+    background: var(--green);
+    color: var(--gold-pale);
+    display: grid;
+    place-items: center;
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 17px;
+    flex-shrink: 0;
+  }
+
+  .auth-mark .word {
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: 19px;
+    letter-spacing: -0.01em;
+  }
+
+  .auth-card h1 {
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: 26px;
+    margin: 0 0 6px;
+    letter-spacing: -0.01em;
+  }
+
+  .eyebrow {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .11em;
+    text-transform: uppercase;
+    color: var(--gold);
+  }
+
+  .muted { color: var(--muted); }
+
+  .field { margin-top: 16px; }
+
+  .field label {
+    display: block;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--ink-soft);
+    margin-bottom: 6px;
+    letter-spacing: .01em;
+  }
+
+  input[type="text"], input[type="password"], input[type="email"],
+  input[type="number"], input[type="date"], input[type="search"],
+  input:not([type]), select, textarea {
+    width: 100%;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    background: var(--paper);
+    color: var(--ink);
+  }
+
+  html[data-theme="dark"] input, html[data-theme="dark"] select, html[data-theme="dark"] textarea {
+    background: var(--paper-alt);
+  }
+
+  input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible, .nav-btn:focus-visible {
+    outline: 2px solid var(--gold);
+    outline-offset: 1px;
+  }
+
+  textarea { min-height: 76px; resize: vertical; }
+
+  .btn {
+    border: 1px solid var(--green);
+    border-radius: var(--radius-sm);
+    padding: 10px 16px;
+    cursor: pointer;
+    background: var(--green);
+    color: #FBF8F0;
+    font-weight: 600;
+    font-size: 14px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: transform .08s ease, box-shadow .15s ease;
+  }
+  .btn:hover { box-shadow: var(--shadow-sm); }
+  .btn:active { transform: translateY(1px); }
+  .btn:disabled { opacity: .55; cursor: not-allowed; }
+
+  .btn.secondary {
+    background: transparent;
+    color: var(--ink);
+    border-color: var(--line);
+  }
+
+  .btn.ghost {
+    background: transparent;
+    color: var(--ink-soft);
+    border-color: transparent;
+  }
+  .btn.ghost:hover { background: var(--line-soft); }
+
+  .btn.danger {
+    background: var(--rust);
+    border-color: var(--rust);
+    color: #FCEFEA;
+  }
+
+  .btn.gold {
+    background: var(--gold);
+    border-color: var(--gold);
+    color: #2A1F0C;
+  }
+
+  .btn.small { padding: 6px 11px; font-size: 12.5px; border-radius: 7px; }
+  .btn.block { width: 100%; justify-content: center; }
+  .btn.icon-only { padding: 7px 9px; }
+
+  .auth-submit { margin-top: 22px; }
+
+  .error-text {
+    color: var(--rust);
+    font-size: 13.5px;
+    margin-top: 12px;
+    min-height: 1px;
+  }
+
+  .auth-foot {
+    margin-top: 18px;
+    font-size: 12.5px;
+    color: var(--muted);
+    text-align: center;
+  }
+
+  /* ---------------- App shell ---------------- */
+
+  .app-shell {
+    min-height: 100vh;
+    display: grid;
+    grid-template-columns: 246px 1fr;
+  }
+
+  .sidebar {
+    background: var(--green);
+    color: #EFEAD8;
+    padding: 22px 16px 18px;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .sidebar::after {
+    content: "";
+    position: absolute;
+    top: 0; right: 0; bottom: 0;
+    width: 6px;
+    background: linear-gradient(180deg, var(--gold), transparent 70%, var(--gold));
+    opacity: .55;
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 6px 20px;
+    margin-bottom: 12px;
+    border-bottom: 1px solid rgba(239,234,216,.14);
+  }
+
+  .brand .ledger-icon { background: var(--gold); color: #2A1F0C; }
+
+  .brand .word {
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: 18px;
+    color: #FBF8EF;
+  }
+
+  .nav-scroll { flex: 1; overflow-y: auto; padding-right: 2px; }
+
+  .nav-group { margin-bottom: 18px; }
+
+  .nav-group-label {
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: rgba(239,234,216,.5);
+    padding: 0 10px;
+    margin-bottom: 6px;
+  }
+
+  .nav-btn {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    text-align: left;
+    border: 0;
+    background: transparent;
+    padding: 9px 10px;
+    border-radius: 9px;
+    cursor: pointer;
+    color: rgba(239,234,216,.86);
+    margin-bottom: 2px;
+    font-size: 13.5px;
+    font-weight: 500;
+  }
+
+  .nav-btn .ic { width: 17px; text-align: center; flex-shrink: 0; opacity: .85; }
+
+  .nav-btn:hover { background: rgba(239,234,216,.09); color: #fff; }
+
+  .nav-btn.active {
+    background: rgba(239,234,216,.14);
+    color: #fff;
+    box-shadow: inset 2px 0 0 var(--gold);
+  }
+
+  .nav-foot {
+    padding-top: 14px;
+    border-top: 1px solid rgba(239,234,216,.14);
+    font-size: 11.5px;
+    color: rgba(239,234,216,.45);
+  }
+
+  .main-col { display: flex; flex-direction: column; min-width: 0; }
+
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 16px 28px;
+    border-bottom: 1px solid var(--line);
+    background: var(--paper);
+    position: sticky;
+    top: 0;
+    z-index: 20;
+  }
+
+  .topbar-left { display: flex; align-items: center; gap: 10px; }
+  .topbar-left .titles { display: flex; flex-direction: column; }
+
+  #pageTitle {
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: 22px;
+    letter-spacing: -0.01em;
+  }
+
+  #pageSubtitle { font-size: 12.5px; color: var(--muted); margin-top: 1px; }
+
+  .topbar-right { display: flex; align-items: center; gap: 8px; }
+
+  .icon-btn {
+    width: 36px; height: 36px;
+    border-radius: 10px;
+    border: 1px solid var(--line);
+    background: var(--card);
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+    position: relative;
+    font-size: 15px;
+  }
+  .icon-btn:hover { background: var(--line-soft); }
+
+  .badge-dot {
+    position: absolute;
+    top: -4px; right: -4px;
+    background: var(--rust);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    border-radius: 20px;
+    min-width: 16px;
+    height: 16px;
+    display: grid;
+    place-items: center;
+    padding: 0 3px;
+    border: 2px solid var(--paper);
+  }
+
+  .user-chip {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border: 1px solid var(--line);
+    background: var(--card);
+    border-radius: 999px;
+    padding: 5px 12px 5px 6px;
+    cursor: pointer;
+  }
+
+  .user-avatar {
+    width: 26px; height: 26px;
+    border-radius: 999px;
+    background: var(--gold);
+    color: #2A1F0C;
+    display: grid;
+    place-items: center;
+    font-weight: 700;
+    font-size: 12px;
+  }
+
+  .user-chip .name { font-size: 13px; font-weight: 600; }
+  .user-chip .role { font-size: 10.5px; color: var(--muted); }
+
+  .content { padding: 24px 28px 60px; max-width: 1320px; }
+
+  .view { animation: fadein .18s ease; }
+  @keyframes fadein { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+
+  /* ---------------- Popovers / dropdowns ---------------- */
+
+  .popover-wrap { position: relative; }
+
+  .popover {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    width: 320px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    z-index: 40;
+    overflow: hidden;
+  }
+
+  .popover-head {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-weight: 700;
+    font-size: 13px;
+  }
+
+  .popover-body { max-height: 340px; overflow-y: auto; }
+
+  .notif-item {
+    padding: 11px 16px;
+    border-bottom: 1px solid var(--line-soft);
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .notif-item:hover { background: var(--line-soft); }
+  .notif-item.unread { background: var(--gold-pale); }
+  .notif-item .t { font-weight: 600; margin-bottom: 2px; }
+  .notif-item .b { color: var(--muted); font-size: 12px; }
+  .notif-item .d { color: var(--muted); font-size: 10.5px; margin-top: 4px; }
+
+  .menu-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+    font-size: 13.5px;
+    cursor: pointer;
+  }
+  .menu-item:hover { background: var(--line-soft); }
+  .menu-sep { border-top: 1px solid var(--line); margin: 4px 0; }
+
+  /* ---------------- Cards / grids ---------------- */
+
+  .grid { display: grid; gap: 16px; }
+  .grid.cols-4 { grid-template-columns: repeat(4, minmax(0,1fr)); }
+  .grid.cols-3 { grid-template-columns: repeat(3, minmax(0,1fr)); }
+  .grid.cols-2 { grid-template-columns: repeat(2, minmax(0,1fr)); }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .card-pad { padding: 18px 20px; }
+
+  .card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 16px 20px;
+    border-bottom: 2px solid var(--gold);
+    background: linear-gradient(180deg, var(--gold-pale), transparent);
+  }
+
+  .card-head h3 {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: 16px;
+    font-weight: 600;
+  }
+
+  .card-head .sub { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+
+  .stat-card { padding: 16px 18px; }
+  .stat-card .label {
+    font-size: 10.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+  .stat-card .value {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 25px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .stat-card .delta { font-size: 11.5px; margin-top: 6px; color: var(--muted); }
+
+  .section { margin-top: 22px; }
+  .section-title {
+    font-family: var(--font-display);
+    font-size: 18px;
+    font-weight: 600;
+    margin: 0 0 12px;
+  }
+
+  /* ---------------- Toolbar / filters ---------------- */
+
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+
+  .filter-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .filter-row input, .filter-row select { width: auto; min-width: 130px; padding: 8px 10px; font-size: 13px; }
+  .search-input { min-width: 200px !important; }
+
+  /* ---------------- Tables ---------------- */
+
+  .table-wrap { overflow-x: auto; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+
+  th, td {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--line-soft);
+    text-align: left;
+    vertical-align: middle;
+    white-space: nowrap;
+  }
+
+  td.wrap, th.wrap { white-space: normal; }
+
+  th {
+    color: var(--muted);
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: .07em;
+    font-weight: 700;
+    position: sticky;
+    top: 0;
+    background: var(--card);
+  }
+
+  tbody tr:hover { background: var(--line-soft); }
+  tbody tr:last-child td { border-bottom: none; }
+
+  .right { text-align: right; }
+  .center { text-align: center; }
+
+  .row-actions { display: flex; gap: 6px; justify-content: flex-end; }
+
+  .empty-state {
+    text-align: center;
+    padding: 46px 20px;
+    color: var(--muted);
+  }
+  .empty-state .ic { font-size: 30px; margin-bottom: 10px; opacity: .7; }
+  .empty-state .t { font-weight: 600; color: var(--ink-soft); margin-bottom: 4px; }
+
+  .skeleton-row td {
+    background: linear-gradient(90deg, var(--line-soft) 25%, var(--paper-alt) 37%, var(--line-soft) 63%);
+    background-size: 400% 100%;
+    animation: shimmer 1.4s ease infinite;
+    height: 18px;
+    border-radius: 4px;
+  }
+  @keyframes shimmer { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
+
+  .pagination {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 12px;
+    font-size: 12.5px;
+    color: var(--muted);
+  }
+
+  /* ---------------- Pills / badges ---------------- */
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .01em;
+    background: var(--line-soft);
+    color: var(--ink-soft);
+  }
+  .pill.success { background: var(--green-pale); color: var(--green); }
+  .pill.warning { background: var(--gold-pale); color: var(--gold); }
+  .pill.danger { background: var(--rust-pale); color: var(--rust); }
+  .pill.info { background: var(--blue-pale); color: var(--blue); }
+
+  .avatar-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12.5px;
+  }
+  .avatar-tag .dot {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--gold);
+  }
+
+  /* ---------------- Progress ---------------- */
+
+  .progress-track {
+    width: 100%;
+    height: 8px;
+    border-radius: 999px;
+    background: var(--line-soft);
+    overflow: hidden;
+  }
+  .progress-fill { height: 100%; background: var(--green); border-radius: 999px; }
+  .progress-fill.warn { background: var(--gold); }
+  .progress-fill.over { background: var(--rust); }
+
+  /* ---------------- Forms ---------------- */
+
+  .form-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0,1fr));
+    gap: 14px;
+  }
+  .form-grid .full { grid-column: 1 / -1; }
+  .form-grid .field { margin-top: 0; }
+
+  .field-hint { font-size: 11.5px; color: var(--muted); margin-top: 4px; }
+
+  fieldset { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 12px 14px; margin: 0; }
+  legend { font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); padding: 0 6px; }
+
+  .item-row {
+    display: grid;
+    grid-template-columns: 2fr 1fr 1fr 1fr auto;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 8px;
+  }
+  .item-row input { padding: 8px 10px; font-size: 13px; }
+
+  /* ---------------- Modal ---------------- */
+
+  .modal-overlay {
+    position: fixed; inset: 0;
+    background: rgba(18,22,17,.5);
+    backdrop-filter: blur(1px);
+    display: grid;
+    place-items: start center;
+    padding: 40px 16px;
+    z-index: 100;
+    overflow-y: auto;
+  }
+
+  .modal {
+    background: var(--card);
+    border-radius: var(--radius);
+    width: 100%;
+    max-width: 620px;
+    box-shadow: var(--shadow);
+    animation: modalin .16s ease;
+    margin: auto;
+  }
+  @keyframes modalin { from { opacity: 0; transform: translateY(8px) scale(.99); } to { opacity: 1; transform:none; } }
+
+  .modal.wide { max-width: 760px; }
+
+  .modal-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 22px;
+    border-bottom: 1px solid var(--line);
+  }
+  .modal-head h3 {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: 18px;
+    font-weight: 600;
+  }
+  .modal-body { padding: 20px 22px; max-height: 68vh; overflow-y: auto; }
+  .modal-foot {
+    padding: 16px 22px;
+    border-top: 1px solid var(--line);
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+  }
+
+  /* ---------------- Toasts ---------------- */
+
+  .toast-stack {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    z-index: 200;
+  }
+  .toast {
+    background: var(--ink);
+    color: var(--paper);
+    padding: 12px 16px;
+    border-radius: 10px;
+    font-size: 13.5px;
+    box-shadow: var(--shadow);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 240px;
+    max-width: 360px;
+    animation: toastin .18s ease;
+  }
+  html[data-theme="dark"] .toast { background: var(--card); border: 1px solid var(--line); color: var(--ink); }
+  @keyframes toastin { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  .toast.success { border-left: 3px solid var(--green-light); }
+  .toast.error { border-left: 3px solid var(--rust); }
+  .toast.info { border-left: 3px solid var(--gold); }
+
+  /* ---------------- Charts ---------------- */
+
+  .chart-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; font-size: 12px; }
+  .chart-legend .li { display: flex; align-items: center; gap: 6px; }
+  .chart-legend .sw { width: 9px; height: 9px; border-radius: 2px; }
+
+  /* ---------------- Misc ---------------- */
+
+  .tabs-inline { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 16px; }
+  .tab-inline-btn {
+    background: none; border: 0; padding: 9px 4px; margin-right: 18px;
+    font-size: 13.5px; font-weight: 600; color: var(--muted); cursor: pointer;
+    border-bottom: 2px solid transparent; margin-bottom: -1px;
+  }
+  .tab-inline-btn.active { color: var(--ink); border-bottom-color: var(--gold); }
+
+  .role-gate { display: none; }
+
+  .kbd { font-family: var(--font-mono); background: var(--line-soft); border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px; font-size: 11px; }
+
+  .mobile-menu-btn { display: none; }
+
+  .sidebar-close { display: none; }
+
+  @media (max-width: 980px) {
+    .app-shell { grid-template-columns: 1fr; }
 
     .sidebar {
-      border-right: 1px solid var(--border);
-      background: #ffffff;
-      padding: 18px;
+      position: fixed;
+      top: 0; left: 0; bottom: 0;
+      width: 260px;
+      z-index: 60;
+      transform: translateX(-100%);
+      transition: transform .2s ease;
     }
+    .sidebar.open { transform: translateX(0); box-shadow: 20px 0 40px rgba(0,0,0,.25); }
+    .sidebar-close { display: block; position: absolute; top: 16px; right: 14px; background: none; border: 0; color: #fff; font-size: 18px; cursor: pointer; }
 
-    .brand {
-      font-size: 20px;
-      font-weight: 800;
-      margin-bottom: 24px;
+    .sidebar-scrim {
+      display: none;
+      position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 55;
     }
+    .sidebar-scrim.show { display: block; }
 
-    .nav-btn {
-      display: block;
-      width: 100%;
-      text-align: left;
-      border: 0;
-      background: transparent;
-      padding: 10px 12px;
-      border-radius: 10px;
-      cursor: pointer;
-      color: var(--text);
-      margin-bottom: 6px;
-    }
+    .mobile-menu-btn { display: grid; }
 
-    .nav-btn:hover {
-      background: #eef2ff;
-    }
-
-    .nav-btn.active {
-      background: var(--primary);
-      color: white;
-    }
-
-    .main {
-      padding: 24px;
-    }
-
-    .topbar {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 16px;
-      margin-bottom: 20px;
-    }
-
-    .grid {
-      display: grid;
-      gap: 16px;
-    }
-
-    .grid.cols-4 {
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-    }
-
-    .grid.cols-2 {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-
-    .stat {
-      padding: 16px;
-    }
-
-    .stat .label {
-      color: var(--muted);
-      font-size: 13px;
-      margin-bottom: 8px;
-    }
-
-    .stat .value {
-      font-size: 26px;
-      font-weight: 800;
-    }
-
-    .section {
-      margin-top: 24px;
-    }
-
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 14px;
-    }
-
-    th,
-    td {
-      padding: 10px 12px;
-      border-bottom: 1px solid var(--border);
-      text-align: left;
-      vertical-align: top;
-    }
-
-    th {
-      color: var(--muted);
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-    }
-
-    .form-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 12px;
-    }
-
-    .form-grid .full {
-      grid-column: 1 / -1;
-    }
-
-    label {
-      display: block;
-      font-size: 13px;
-      font-weight: 600;
-      margin-bottom: 6px;
-    }
-
-    input,
-    select,
-    textarea {
-      width: 100%;
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 10px 12px;
-      background: white;
-    }
-
-    textarea {
-      min-height: 80px;
-      resize: vertical;
-    }
-
-    .btn {
-      border: 0;
-      border-radius: 10px;
-      padding: 10px 14px;
-      cursor: pointer;
-      background: var(--primary);
-      color: white;
-      font-weight: 700;
-    }
-
-    .btn.secondary {
-      background: #e2e8f0;
-      color: var(--text);
-    }
-
-    .btn.small {
-      padding: 6px 10px;
-      font-size: 13px;
-    }
-
-    .toolbar {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 12px;
-      margin-bottom: 14px;
-    }
-
-    .error {
-      color: var(--danger);
-      font-size: 14px;
-      margin-top: 10px;
-    }
-
-    .pill {
-      display: inline-block;
-      padding: 4px 10px;
-      border-radius: 999px;
-      font-size: 12px;
-      font-weight: 700;
-      background: #e2e8f0;
-    }
-
-    .pill.success {
-      background: #dcfce7;
-      color: #166534;
-    }
-
-    .pill.warning {
-      background: #fef3c7;
-      color: #92400e;
-    }
-
-    .pill.danger {
-      background: #fee2e2;
-      color: #991b1b;
-    }
-
-    .right {
-      text-align: right;
-    }
-
-    @media (max-width: 900px) {
-      .app-shell {
-        grid-template-columns: 1fr;
-      }
-
-      .sidebar {
-        border-right: 0;
-        border-bottom: 1px solid var(--border);
-      }
-
-      .grid.cols-4,
-      .grid.cols-2,
-      .form-grid {
-        grid-template-columns: 1fr;
-      }
-    }
-  </style>
+    .grid.cols-4, .grid.cols-3, .grid.cols-2, .form-grid { grid-template-columns: 1fr; }
+    .content { padding: 18px 14px 50px; }
+    .topbar { padding: 12px 14px; }
+    .item-row { grid-template-columns: 1fr 1fr; }
+  }
+</style>
 </head>
 <body>
-  <div id="loginView" class="auth-wrap">
-    <div class="card auth-card">
-      <h1>FamilyFinance</h1>
-      <p class="muted">Sign in to manage your family budget.</p>
 
-      <form id="loginForm">
+<!-- ============================== LOGIN ============================== -->
+<div id="loginView" class="auth-wrap">
+  <div class="auth-card">
+    <div class="auth-mark">
+      <div class="ledger-icon">FF</div>
+      <div class="word">FamilyFinance</div>
+    </div>
+    <div class="eyebrow">Household Ledger</div>
+    <h1>Welcome back</h1>
+    <p class="muted" style="margin:0;font-size:13.5px;">Sign in to manage income, bills, and savings for your family.</p>
+
+    <form id="loginForm">
+      <div class="field">
         <label for="loginUsername">Username</label>
         <input id="loginUsername" autocomplete="username" required />
-
-        <label for="loginPassword" style="margin-top: 12px;">Password</label>
+      </div>
+      <div class="field">
+        <label for="loginPassword">Password</label>
         <input id="loginPassword" type="password" autocomplete="current-password" required />
-
-        <div style="margin-top: 16px;">
-          <button class="btn" type="submit">Sign In</button>
-        </div>
-
-        <div id="loginError" class="error"></div>
-      </form>
-    </div>
+      </div>
+      <div class="auth-submit">
+        <button class="btn block" type="submit" id="loginSubmitBtn">Sign In</button>
+      </div>
+      <div id="loginError" class="error-text"></div>
+    </form>
+    <div class="auth-foot">First run? Check your server console for a generated admin password, or set <span class="kbd">FF_ADMIN_PASS</span>.</div>
   </div>
+</div>
 
-  <div id="appView" class="app-shell hidden">
-    <aside class="sidebar">
-      <div class="brand">🏠 FamilyFinance</div>
+<!-- ============================== APP SHELL ============================== -->
+<div id="appView" class="app-shell hidden">
+  <div class="sidebar-scrim" id="sidebarScrim" onclick="closeSidebar()"></div>
 
-      <button class="nav-btn active" data-tab="dashboard" onclick="showTab('dashboard')">Dashboard</button>
-      <button class="nav-btn" data-tab="expenses" onclick="showTab('expenses')">Expenses</button>
-      <button class="nav-btn" data-tab="income" onclick="showTab('income')">Income</button>
-      <button class="nav-btn" data-tab="bills" onclick="showTab('bills')">Bills</button>
-      <button class="nav-btn" data-tab="budgets" onclick="showTab('budgets')">Budgets</button>
-      <button class="nav-btn" data-tab="goals" onclick="showTab('goals')">Goals</button>
-      <button class="nav-btn" data-tab="settings" onclick="showTab('settings')">Settings</button>
-    </aside>
+  <aside class="sidebar" id="sidebar">
+    <button class="sidebar-close" onclick="closeSidebar()" aria-label="Close menu">✕</button>
+    <div class="brand">
+      <div class="ledger-icon">FF</div>
+      <div class="word">FamilyFinance</div>
+    </div>
 
-    <main class="main">
-      <div class="topbar">
-        <div>
-          <h2 id="pageTitle" style="margin: 0;">Dashboard</h2>
-          <div class="muted" id="userLabel"></div>
-        </div>
-        <div>
-          <button class="btn secondary" onclick="logout()">Logout</button>
+    <nav class="nav-scroll">
+      <div class="nav-group">
+        <div class="nav-group-label">Overview</div>
+        <button class="nav-btn active" data-tab="dashboard" onclick="showTab('dashboard')"><span class="ic">◈</span> Dashboard</button>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-group-label">Money</div>
+        <button class="nav-btn" data-tab="expenses" onclick="showTab('expenses')"><span class="ic">−</span> Expenses</button>
+        <button class="nav-btn" data-tab="income" onclick="showTab('income')"><span class="ic">+</span> Income</button>
+        <button class="nav-btn" data-tab="bills" onclick="showTab('bills')"><span class="ic">▤</span> Bills</button>
+        <button class="nav-btn" data-tab="budgets" onclick="showTab('budgets')"><span class="ic">▦</span> Budgets</button>
+        <button class="nav-btn" data-tab="goals" onclick="showTab('goals')"><span class="ic">◎</span> Goals</button>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-group-label">Planning</div>
+        <button class="nav-btn" data-tab="recurring" onclick="showTab('recurring')"><span class="ic">↻</span> Recurring</button>
+        <button class="nav-btn" data-tab="reports" onclick="showTab('reports')"><span class="ic">▲</span> Reports</button>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-group-label">Household</div>
+        <button class="nav-btn" data-tab="accounts" onclick="showTab('accounts')"><span class="ic">▣</span> Accounts</button>
+        <button class="nav-btn" data-tab="payees" onclick="showTab('payees')"><span class="ic">☍</span> Payees</button>
+        <button class="nav-btn" data-tab="members" onclick="showTab('members')"><span class="ic">☺</span> Members</button>
+        <button class="nav-btn" data-tab="categories" onclick="showTab('categories')"><span class="ic">▾</span> Categories</button>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-group-label">System</div>
+        <button class="nav-btn" data-tab="settings" onclick="showTab('settings')"><span class="ic">⚙</span> Settings</button>
+        <button class="nav-btn role-gate" data-role="Admin" data-tab="admin" onclick="showTab('admin')"><span class="ic">⌘</span> Admin</button>
+      </div>
+    </nav>
+
+    <div class="nav-foot">FamilyFinance Enhanced &middot; local-first ledger</div>
+  </aside>
+
+  <div class="main-col">
+    <header class="topbar">
+      <div class="topbar-left">
+        <button class="icon-btn mobile-menu-btn" onclick="openSidebar()" aria-label="Open menu">☰</button>
+        <div class="titles">
+          <div id="pageTitle">Dashboard</div>
+          <div id="pageSubtitle">A quick look at where things stand</div>
         </div>
       </div>
 
-      <section id="tab-dashboard">
+      <div class="topbar-right">
+        <button class="icon-btn" id="themeToggleBtn" onclick="toggleTheme()" title="Toggle dark mode">🌓</button>
+
+        <div class="popover-wrap">
+          <button class="icon-btn" onclick="toggleNotifPopover()" title="Notifications">
+            🔔<span class="badge-dot hidden" id="notifBadge">0</span>
+          </button>
+          <div class="popover hidden" id="notifPopover">
+            <div class="popover-head">
+              <span>Notifications</span>
+              <button class="btn ghost small" onclick="markAllNotificationsRead()">Mark all read</button>
+            </div>
+            <div class="popover-body" id="notifList"><div class="empty-state" style="padding:24px;">No notifications yet.</div></div>
+          </div>
+        </div>
+
+        <div class="popover-wrap">
+          <div class="user-chip" onclick="toggleUserMenu()">
+            <div class="user-avatar" id="userAvatar">?</div>
+            <div>
+              <div class="name" id="userName">—</div>
+              <div class="role" id="userRole">—</div>
+            </div>
+          </div>
+          <div class="popover hidden" id="userMenu" style="width:200px;">
+            <div class="menu-item" onclick="openChangePasswordModal()">🔑 Change password</div>
+            <div class="menu-sep"></div>
+            <div class="menu-item" onclick="logout()">↪ Sign out</div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main class="content">
+
+      <!-- ============================== DASHBOARD ============================== -->
+      <section id="tab-dashboard" class="view">
         <div class="grid cols-4" id="dashboardStats"></div>
 
-        <div class="section grid cols-2">
+        <div class="grid cols-2 section" style="grid-template-columns: 1.4fr 1fr;">
           <div class="card">
-            <h3>Recent Expenses</h3>
-            <div id="recentExpenses"></div>
+            <div class="card-head">
+              <div>
+                <h3>Cash Flow — Last 6 Months</h3>
+                <div class="sub">Income vs. total outflow (expenses + bill payments)</div>
+              </div>
+            </div>
+            <div class="card-pad" id="dashboardCashflowChart"></div>
           </div>
 
           <div class="card">
-            <h3>Recent Income</h3>
-            <div id="recentIncome"></div>
+            <div class="card-head">
+              <div>
+                <h3>Top Categories</h3>
+                <div class="sub">This month's biggest expense categories</div>
+              </div>
+            </div>
+            <div class="card-pad" id="dashboardTopCats"></div>
+          </div>
+        </div>
+
+        <div class="grid cols-2 section">
+          <div class="card">
+            <div class="card-head">
+              <div><h3>Monthly Budget</h3><div class="sub">Budgeted vs. spent this month</div></div>
+            </div>
+            <div class="card-pad" id="dashboardBudget"></div>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <div><h3>Savings Goals</h3><div class="sub">Progress toward active goals</div></div>
+              <button class="btn ghost small" onclick="showTab('goals')">View all →</button>
+            </div>
+            <div class="card-pad" id="dashboardGoals"></div>
+          </div>
+        </div>
+
+        <div class="grid cols-2 section">
+          <div class="card">
+            <div class="card-head"><h3>Recent Expenses</h3><button class="btn ghost small" onclick="showTab('expenses')">View all →</button></div>
+            <div class="table-wrap" id="dashboardRecentExpenses"></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>Recent Income</h3><button class="btn ghost small" onclick="showTab('income')">View all →</button></div>
+            <div class="table-wrap" id="dashboardRecentIncome"></div>
           </div>
         </div>
       </section>
 
-      <section id="tab-expenses" class="hidden">
+      <!-- ============================== EXPENSES ============================== -->
+      <section id="tab-expenses" class="view hidden">
         <div class="card">
-          <div class="toolbar">
-            <h3 style="margin: 0;">Expenses</h3>
-            <button class="btn" onclick="toggleForm('expenseForm')">+ Add Expense</button>
+          <div class="card-head">
+            <div><h3>Expenses</h3><div class="sub" id="expensesSub">Every dollar spent by your family</div></div>
+            <div style="display:flex;gap:8px;">
+              <button class="btn secondary small" onclick="exportEntity('expenses')">⇩ Export CSV</button>
+              <button class="btn small role-gate" data-role="Admin,Editor" onclick="openExpenseModal()">+ Add Expense</button>
+            </div>
           </div>
-
-          <form id="expenseForm" class="hidden" onsubmit="createExpense(event)">
-            <div class="form-grid">
-              <div>
-                <label>Title</label>
-                <input id="expenseTitle" required />
-              </div>
-              <div>
-                <label>Category</label>
-                <input id="expenseCategory" value="Other" required />
-              </div>
-              <div>
-                <label>Amount</label>
-                <input id="expenseAmount" type="number" step="0.01" min="0.01" required />
-              </div>
-              <div>
-                <label>Date</label>
-                <input id="expenseDate" type="date" required />
-              </div>
-              <div>
-                <label>Store</label>
-                <input id="expenseStore" />
-              </div>
-              <div>
-                <label>Member</label>
-                <input id="expenseMember" />
-              </div>
-              <div class="full">
-                <label>Notes</label>
-                <textarea id="expenseNotes"></textarea>
+          <div class="card-pad">
+            <div class="toolbar">
+              <div class="filter-row">
+                <input type="search" class="search-input" id="expensesSearch" placeholder="Search title, store, notes…" oninput="debouncedReload('expenses')" />
+                <select id="expensesCategoryFilter" onchange="loadExpenses(0)"><option value="">All categories</option></select>
+                <select id="expensesMemberFilter" onchange="loadExpenses(0)"><option value="">All members</option></select>
+                <input type="date" id="expensesFrom" onchange="loadExpenses(0)" title="From date" />
+                <input type="date" id="expensesTo" onchange="loadExpenses(0)" title="To date" />
               </div>
             </div>
-            <div style="margin-top: 14px;">
-              <button class="btn" type="submit">Save Expense</button>
-            </div>
-          </form>
-
-          <div id="expensesTable" style="margin-top: 16px;"></div>
+            <div class="table-wrap" id="expensesTable"></div>
+            <div class="pagination" id="expensesPagination"></div>
+          </div>
         </div>
       </section>
 
-      <section id="tab-income" class="hidden">
+      <!-- ============================== INCOME ============================== -->
+      <section id="tab-income" class="view hidden">
         <div class="card">
-          <div class="toolbar">
-            <h3 style="margin: 0;">Income</h3>
-            <button class="btn" onclick="toggleForm('incomeForm')">+ Add Income</button>
+          <div class="card-head">
+            <div><h3>Income</h3><div class="sub">Every dollar coming in</div></div>
+            <div style="display:flex;gap:8px;">
+              <button class="btn secondary small" onclick="exportEntity('income')">⇩ Export CSV</button>
+              <button class="btn small role-gate" data-role="Admin,Editor" onclick="openIncomeModal()">+ Add Income</button>
+            </div>
           </div>
-
-          <form id="incomeForm" class="hidden" onsubmit="createIncome(event)">
-            <div class="form-grid">
-              <div>
-                <label>Title</label>
-                <input id="incomeTitle" required />
-              </div>
-              <div>
-                <label>Category</label>
-                <input id="incomeCategory" value="Other" required />
-              </div>
-              <div>
-                <label>Amount</label>
-                <input id="incomeAmount" type="number" step="0.01" min="0.01" required />
-              </div>
-              <div>
-                <label>Date</label>
-                <input id="incomeDate" type="date" required />
-              </div>
-              <div>
-                <label>Source</label>
-                <input id="incomeSource" />
-              </div>
-              <div>
-                <label>Member</label>
-                <input id="incomeMember" />
-              </div>
-              <div class="full">
-                <label>Notes</label>
-                <textarea id="incomeNotes"></textarea>
+          <div class="card-pad">
+            <div class="toolbar">
+              <div class="filter-row">
+                <input type="search" class="search-input" id="incomeSearch" placeholder="Search title, source, notes…" oninput="debouncedReload('income')" />
+                <select id="incomeCategoryFilter" onchange="loadIncome(0)"><option value="">All categories</option></select>
+                <select id="incomeMemberFilter" onchange="loadIncome(0)"><option value="">All members</option></select>
+                <input type="date" id="incomeFrom" onchange="loadIncome(0)" title="From date" />
+                <input type="date" id="incomeTo" onchange="loadIncome(0)" title="To date" />
               </div>
             </div>
-            <div style="margin-top: 14px;">
-              <button class="btn" type="submit">Save Income</button>
-            </div>
-          </form>
-
-          <div id="incomeTable" style="margin-top: 16px;"></div>
+            <div class="table-wrap" id="incomeTable"></div>
+            <div class="pagination" id="incomePagination"></div>
+          </div>
         </div>
       </section>
 
-      <section id="tab-bills" class="hidden">
+      <!-- ============================== BILLS ============================== -->
+      <section id="tab-bills" class="view hidden">
         <div class="card">
-          <div class="toolbar">
-            <h3 style="margin: 0;">Bills</h3>
-            <button class="btn" onclick="toggleForm('billForm')">+ Add Bill</button>
+          <div class="card-head">
+            <div><h3>Bills</h3><div class="sub">Track what's owed and what's been paid</div></div>
+            <div style="display:flex;gap:8px;">
+              <button class="btn secondary small" onclick="exportEntity('bills')">⇩ Export CSV</button>
+              <button class="btn small role-gate" data-role="Admin,Editor" onclick="openBillModal()">+ New Bill</button>
+            </div>
           </div>
-
-          <form id="billForm" class="hidden" onsubmit="createBill(event)">
-            <div class="form-grid">
-              <div>
-                <label>Payee Name</label>
-                <input id="billPayee" required />
-              </div>
-              <div>
-                <label>Category</label>
-                <input id="billCategory" value="Other" required />
-              </div>
-              <div>
-                <label>Bill Date</label>
-                <input id="billDate" type="date" required />
-              </div>
-              <div>
-                <label>Due Date</label>
-                <input id="billDueDate" type="date" required />
-              </div>
-              <div>
-                <label>Item Name</label>
-                <input id="billItemName" required />
-              </div>
-              <div>
-                <label>Quantity</label>
-                <input id="billQuantity" type="number" step="0.0001" min="0.0001" value="1" required />
-              </div>
-              <div>
-                <label>Unit Price</label>
-                <input id="billUnitPrice" type="number" step="0.01" min="0" required />
-              </div>
-              <div>
-                <label>Tax Rate %</label>
-                <input id="billTaxRate" type="number" step="0.01" min="0" max="100" value="0" />
-              </div>
-              <div class="full">
-                <label>Notes</label>
-                <textarea id="billNotes"></textarea>
+          <div class="card-pad">
+            <div class="toolbar">
+              <div class="filter-row">
+                <input type="search" class="search-input" id="billsSearch" placeholder="Search bill #, payee, notes…" oninput="debouncedReload('bills')" />
+                <select id="billsStatusFilter" onchange="loadBills(0)">
+                  <option value="">All statuses</option>
+                  <option value="Pending">Pending</option>
+                  <option value="Partially Paid">Partially Paid</option>
+                  <option value="Paid">Paid</option>
+                  <option value="Overdue">Overdue</option>
+                  <option value="Void">Void</option>
+                </select>
+                <select id="billsCategoryFilter" onchange="loadBills(0)"><option value="">All categories</option></select>
+                <input type="date" id="billsFrom" onchange="loadBills(0)" title="From date" />
+                <input type="date" id="billsTo" onchange="loadBills(0)" title="To date" />
               </div>
             </div>
-            <div style="margin-top: 14px;">
-              <button class="btn" type="submit">Save Bill</button>
-            </div>
-          </form>
-
-          <div id="billsTable" style="margin-top: 16px;"></div>
+            <div class="table-wrap" id="billsTable"></div>
+            <div class="pagination" id="billsPagination"></div>
+          </div>
         </div>
       </section>
 
-      <section id="tab-budgets" class="hidden">
+      <!-- ============================== BUDGETS ============================== -->
+      <section id="tab-budgets" class="view hidden">
         <div class="card">
-          <div class="toolbar">
-            <h3 style="margin: 0;">Budgets</h3>
-            <button class="btn" onclick="toggleForm('budgetForm')">+ Add Budget</button>
-          </div>
-
-          <form id="budgetForm" class="hidden" onsubmit="createBudget(event)">
-            <div class="form-grid">
-              <div>
-                <label>Category</label>
-                <input id="budgetCategory" required />
-              </div>
-              <div>
-                <label>Period</label>
-                <select id="budgetPeriod">
+          <div class="card-head">
+            <div><h3>Budgets</h3><div class="sub">Set spending limits by category</div></div>
+            <div style="display:flex;gap:8px;">
+              <div class="filter-row">
+                <select id="budgetsPeriodFilter" onchange="loadBudgets()">
                   <option value="monthly">Monthly</option>
                   <option value="yearly">Yearly</option>
                 </select>
+                <input type="month" id="budgetsMonth" onchange="loadBudgets()" />
               </div>
-              <div>
-                <label>Amount</label>
-                <input id="budgetAmount" type="number" step="0.01" min="0.01" required />
-              </div>
-              <div>
-                <label>Member</label>
-                <input id="budgetMember" />
-              </div>
-              <div class="full">
-                <label>Notes</label>
-                <textarea id="budgetNotes"></textarea>
-              </div>
+              <button class="btn small role-gate" data-role="Admin,Editor" onclick="openBudgetModal()">+ Add Budget</button>
             </div>
-            <div style="margin-top: 14px;">
-              <button class="btn" type="submit">Save Budget</button>
-            </div>
-          </form>
-
-          <div id="budgetsTable" style="margin-top: 16px;"></div>
+          </div>
+          <div class="card-pad" id="budgetsList"></div>
         </div>
       </section>
 
-      <section id="tab-goals" class="hidden">
+      <!-- ============================== GOALS ============================== -->
+      <section id="tab-goals" class="view hidden">
         <div class="card">
-          <div class="toolbar">
-            <h3 style="margin: 0;">Goals</h3>
-            <button class="btn" onclick="toggleForm('goalForm')">+ Add Goal</button>
+          <div class="card-head">
+            <div><h3>Savings Goals</h3><div class="sub">Set targets and track contributions over time</div></div>
+            <button class="btn small role-gate" data-role="Admin,Editor" onclick="openGoalModal()">+ Add Goal</button>
+          </div>
+          <div class="card-pad" id="goalsList"></div>
+        </div>
+      </section>
+
+      <!-- ============================== RECURRING ============================== -->
+      <section id="tab-recurring" class="view hidden">
+        <div class="card">
+          <div class="card-head">
+            <div><h3>Recurring Rules</h3><div class="sub">Automate expenses, income, and bills on a schedule</div></div>
+            <div style="display:flex;gap:8px;">
+              <button class="btn secondary small role-gate" data-role="Admin,Editor" onclick="runRecurringNow()">▶ Run Due Rules</button>
+              <button class="btn small role-gate" data-role="Admin,Editor" onclick="openRecurringModal()">+ Add Rule</button>
+            </div>
+          </div>
+          <div class="table-wrap" id="recurringTable"></div>
+        </div>
+      </section>
+
+      <!-- ============================== REPORTS ============================== -->
+      <section id="tab-reports" class="view hidden">
+        <div class="toolbar">
+          <div class="tabs-inline" id="reportsTabs">
+            <button class="tab-inline-btn active" data-report="overview" onclick="showReportTab('overview')">Overview</button>
+            <button class="tab-inline-btn" data-report="budget" onclick="showReportTab('budget')">Budget vs Actual</button>
+            <button class="tab-inline-btn" data-report="cashflow" onclick="showReportTab('cashflow')">Cash Flow</button>
+            <button class="tab-inline-btn" data-report="networth" onclick="showReportTab('networth')">Net Worth</button>
+            <button class="tab-inline-btn" data-report="subscriptions" onclick="showReportTab('subscriptions')">Subscriptions</button>
+            <button class="tab-inline-btn" data-report="payees" onclick="showReportTab('payees')">Payees</button>
+          </div>
+          <select id="reportsYearFilter" onchange="loadReportsOverview()"></select>
+        </div>
+
+        <div id="report-overview" class="report-pane"></div>
+        <div id="report-budget" class="report-pane hidden"></div>
+        <div id="report-cashflow" class="report-pane hidden"></div>
+        <div id="report-networth" class="report-pane hidden"></div>
+        <div id="report-subscriptions" class="report-pane hidden"></div>
+        <div id="report-payees" class="report-pane hidden"></div>
+      </section>
+
+      <!-- ============================== ACCOUNTS ============================== -->
+      <section id="tab-accounts" class="view hidden">
+        <div class="card">
+          <div class="card-head">
+            <div><h3>Accounts</h3><div class="sub">Checking, savings, cards, loans, and more</div></div>
+            <button class="btn small role-gate" data-role="Admin,Editor" onclick="openAccountModal()">+ Add Account</button>
+          </div>
+          <div class="card-pad" id="accountsList"></div>
+        </div>
+      </section>
+
+      <!-- ============================== PAYEES ============================== -->
+      <section id="tab-payees" class="view hidden">
+        <div class="card">
+          <div class="card-head">
+            <div><h3>Payees</h3><div class="sub">Vendors and billers you pay regularly</div></div>
+            <button class="btn small role-gate" data-role="Admin,Editor" onclick="openPayeeModal()">+ Add Payee</button>
+          </div>
+          <div class="card-pad">
+            <div class="toolbar">
+              <div class="filter-row">
+                <input type="search" class="search-input" id="payeesSearch" placeholder="Search payees…" oninput="debouncedReload('payees')" />
+              </div>
+            </div>
+            <div class="table-wrap" id="payeesTable"></div>
+            <div class="pagination" id="payeesPagination"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================== MEMBERS ============================== -->
+      <section id="tab-members" class="view hidden">
+        <div class="card">
+          <div class="card-head">
+            <div><h3>Family Members</h3><div class="sub">Who transactions get assigned to</div></div>
+            <button class="btn small role-gate" data-role="Admin,Editor" onclick="openMemberModal()">+ Add Member</button>
+          </div>
+          <div class="table-wrap" id="membersTable"></div>
+        </div>
+      </section>
+
+      <!-- ============================== CATEGORIES ============================== -->
+      <section id="tab-categories" class="view hidden">
+        <div class="toolbar">
+          <div class="tabs-inline" id="categoriesTabs">
+            <button class="tab-inline-btn active" data-cat="expense" onclick="showCategoryTab('expense')">Expense</button>
+            <button class="tab-inline-btn" data-cat="income" onclick="showCategoryTab('income')">Income</button>
+            <button class="tab-inline-btn" data-cat="bill" onclick="showCategoryTab('bill')">Bill</button>
+          </div>
+          <button class="btn small role-gate" data-role="Admin,Editor" onclick="openCategoryModal()">+ Add Category</button>
+        </div>
+        <div class="card">
+          <div class="table-wrap" id="categoriesTable"></div>
+        </div>
+      </section>
+
+      <!-- ============================== SETTINGS ============================== -->
+      <section id="tab-settings" class="view hidden">
+        <div class="grid cols-2">
+          <div class="card">
+            <div class="card-head"><div><h3>Family Settings</h3><div class="sub">Shown on printed bills and reports</div></div></div>
+            <form id="settingsForm" class="card-pad" onsubmit="saveSettings(event)">
+              <div class="form-grid">
+                <div class="field"><label>Family Name</label><input id="settingsFamilyName" /></div>
+                <div class="field"><label>Primary Email</label><input id="settingsEmail" type="email" /></div>
+                <div class="field"><label>Primary Phone</label><input id="settingsPhone" /></div>
+                <div class="field"><label>Currency Symbol</label><input id="settingsCurrencySymbol" maxlength="8" /></div>
+                <div class="field"><label>Currency Code</label><input id="settingsCurrencyCode" maxlength="3" style="text-transform:uppercase;" /></div>
+                <div class="field"><label>Bill Number Prefix</label><input id="settingsBillPrefix" maxlength="12" /></div>
+                <div class="field"><label>Monthly Income Goal</label><input id="settingsMonthlyIncomeGoal" type="number" step="0.01" min="0" /></div>
+                <div class="field"><label>Savings Target %</label><input id="settingsSavingsTargetPct" type="number" step="0.01" min="0" max="100" /></div>
+                <div class="field full"><label>Family Address</label><textarea id="settingsFamilyAddress"></textarea></div>
+                <div class="field full"><label>Family Notes</label><textarea id="settingsFamilyNotes"></textarea></div>
+              </div>
+              <div style="margin-top:16px;"><button class="btn" type="submit">Save Settings</button></div>
+            </form>
           </div>
 
-          <form id="goalForm" class="hidden" onsubmit="createGoal(event)">
-            <div class="form-grid">
-              <div>
-                <label>Name</label>
-                <input id="goalName" required />
-              </div>
-              <div>
-                <label>Target Amount</label>
-                <input id="goalTarget" type="number" step="0.01" min="0.01" required />
-              </div>
-              <div>
-                <label>Current Amount</label>
-                <input id="goalCurrent" type="number" step="0.01" min="0" value="0" />
-              </div>
-              <div>
-                <label>Target Date</label>
-                <input id="goalTargetDate" type="date" />
-              </div>
-              <div class="full">
-                <label>Notes</label>
-                <textarea id="goalNotes"></textarea>
-              </div>
-            </div>
-            <div style="margin-top: 14px;">
-              <button class="btn" type="submit">Save Goal</button>
-            </div>
-          </form>
-
-          <div id="goalsTable" style="margin-top: 16px;"></div>
+          <div class="card" style="align-self:start;">
+            <div class="card-head"><div><h3>Change Password</h3><div class="sub">Update your own login credentials</div></div></div>
+            <form id="passwordForm" class="card-pad" onsubmit="changePassword(event)">
+              <div class="field"><label>Current Password</label><input id="pwCurrent" type="password" autocomplete="current-password" required /></div>
+              <div class="field"><label>New Password</label><input id="pwNew" type="password" autocomplete="new-password" minlength="8" required /></div>
+              <div class="field-hint">At least 8 characters.</div>
+              <div style="margin-top:16px;"><button class="btn secondary" type="submit">Update Password</button></div>
+              <div id="pwError" class="error-text"></div>
+            </form>
+          </div>
         </div>
       </section>
 
-      <section id="tab-settings" class="hidden">
-        <div class="card">
-          <h3>Settings</h3>
-
-          <form onsubmit="saveSettings(event)">
-            <div class="form-grid">
-              <div>
-                <label>Family Name</label>
-                <input id="settingsFamilyName" />
-              </div>
-              <div>
-                <label>Primary Email</label>
-                <input id="settingsEmail" type="email" />
-              </div>
-              <div>
-                <label>Primary Phone</label>
-                <input id="settingsPhone" />
-              </div>
-              <div>
-                <label>Currency Symbol</label>
-                <input id="settingsCurrencySymbol" />
-              </div>
-              <div>
-                <label>Currency Code</label>
-                <input id="settingsCurrencyCode" />
-              </div>
-              <div>
-                <label>Bill Prefix</label>
-                <input id="settingsBillPrefix" />
-              </div>
-              <div>
-                <label>Monthly Income Goal</label>
-                <input id="settingsMonthlyIncomeGoal" type="number" step="0.01" min="0" />
-              </div>
-              <div>
-                <label>Savings Target %</label>
-                <input id="settingsSavingsTargetPct" type="number" step="0.01" min="0" max="100" />
-              </div>
-              <div class="full">
-                <label>Family Address</label>
-                <textarea id="settingsFamilyAddress"></textarea>
-              </div>
-              <div class="full">
-                <label>Family Notes</label>
-                <textarea id="settingsFamilyNotes"></textarea>
-              </div>
+      <!-- ============================== ADMIN ============================== -->
+      <section id="tab-admin" class="view hidden">
+        <div class="grid cols-2">
+          <div class="card">
+            <div class="card-head"><div><h3>Backup</h3><div class="sub">Download a full snapshot of your database</div></div></div>
+            <div class="card-pad">
+              <p class="muted" style="font-size:13px;margin-top:0;">Creates a point-in-time copy of the SQLite database, including every table. Store it somewhere safe.</p>
+              <button class="btn gold" onclick="downloadBackup()">⇩ Download Backup</button>
             </div>
-
-            <div style="margin-top: 14px;">
-              <button class="btn" type="submit">Save Settings</button>
+          </div>
+          <div class="card">
+            <div class="card-head"><div><h3>System</h3><div class="sub">FamilyFinance Enhanced</div></div></div>
+            <div class="card-pad" style="font-size:13px;line-height:1.9;">
+              <div>Signed in as <strong id="adminWhoAmI">—</strong></div>
+              <div>Session cookie: <span class="kbd">HttpOnly</span> <span class="kbd">SameSite=Lax</span></div>
+              <div>All mutating requests require a CSRF token.</div>
             </div>
-          </form>
+          </div>
+        </div>
+
+        <div class="card section">
+          <div class="card-head">
+            <div><h3>Household Users</h3><div class="sub">Who can sign in, and what they're allowed to do</div></div>
+            <button class="btn small" onclick="openUserModal()">+ Add User</button>
+          </div>
+          <div class="card-pad" style="padding-bottom:10px;">
+            <div class="grid cols-3" style="margin-bottom:4px;">
+              <div class="pill success" style="justify-content:flex-start;">Admin — full access, including users &amp; backups</div>
+              <div class="pill info" style="justify-content:flex-start;">Editor — can add &amp; edit everything except users</div>
+              <div class="pill" style="justify-content:flex-start;">Viewer — read-only access</div>
+            </div>
+          </div>
+          <div class="table-wrap" id="usersTable"></div>
+        </div>
+
+        <div class="card section">
+          <div class="card-head">
+            <div><h3>Audit Log</h3><div class="sub">Every login, create, update, and delete action</div></div>
+          </div>
+          <div class="table-wrap" id="auditTable"></div>
+          <div class="pagination card-pad" id="auditPagination" style="margin-top:0;"></div>
         </div>
       </section>
+
     </main>
   </div>
+</div>
 
-  <script>
-    let csrf = null;
+<div id="modalRoot"></div>
+<div class="toast-stack" id="toastStack"></div>
 
-    const $ = (id) => document.getElementById(id);
+<script>
+"use strict";
 
-    function escapeHtml(value) {
-      return String(value ?? "")
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#39;");
+/* =========================================================================
+   STATE & CORE UTILITIES
+   ========================================================================= */
+
+const state = {
+  csrf: null,
+  user: null,
+  settings: { currency_symbol: "$", currency_code: "USD" },
+  caches: { members: [], accounts: [], payees: [], categories: { expense: [], income: [], bill: [] } },
+  notifTimer: null,
+};
+
+const $ = (id) => document.getElementById(id);
+const qs = (sel, root) => (root || document).querySelector(sel);
+const qsa = (sel, root) => Array.from((root || document).querySelectorAll(sel));
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function fmtMoney(amount, opts) {
+  opts = opts || {};
+  const n = Number(amount || 0);
+  const sym = state.settings.currency_symbol || "$";
+  const abs = Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const sign = n < 0 ? "-" : "";
+  const text = `${sign}${sym}${abs}`;
+  if (opts.plain) return text;
+  const cls = n < 0 ? "amt-neg" : (opts.neutral ? "" : "amt-pos");
+  return `<span class="num ${cls}">${text}</span>`;
+}
+
+function fmtDate(value) {
+  if (!value) return "";
+  try {
+    const d = new Date(value + (String(value).length === 10 ? "T00:00:00" : ""));
+    if (isNaN(d.getTime())) return escapeHtml(value);
+    return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  } catch (e) {
+    return escapeHtml(value);
+  }
+}
+
+function fmtDateTime(value) {
+  if (!value) return "";
+  try {
+    const d = new Date(value.includes("T") || value.includes(" ") ? value.replace(" ", "T") + (value.endsWith("Z") ? "" : "Z") : value);
+    if (isNaN(d.getTime())) return escapeHtml(value);
+    return d.toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  } catch (e) {
+    return escapeHtml(value);
+  }
+}
+
+function todayIso() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function debounce(fn, wait) {
+  let t = null;
+  return (...args) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), wait);
+  };
+}
+
+function hasRole(...roles) {
+  return !!state.user && roles.includes(state.user.role);
+}
+
+function applyRoleGates() {
+  qsa(".role-gate").forEach((el) => {
+    const allowed = (el.dataset.role || "").split(",").map((s) => s.trim()).filter(Boolean);
+    const show = allowed.length === 0 || hasRole(...allowed);
+    el.classList.toggle("hidden", !show);
+    if (!show) el.classList.add("hidden");
+  });
+}
+
+/* =========================================================================
+   API HELPER
+   ========================================================================= */
+
+async function api(path, method = "GET", body = null) {
+  const options = {
+    method,
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+  };
+
+  if (state.csrf && ["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+    options.headers["X-CSRF-Token"] = state.csrf;
+  }
+
+  if (body !== null) {
+    options.body = JSON.stringify(body);
+  }
+
+  let res;
+  try {
+    res = await fetch(path, options);
+  } catch (netErr) {
+    throw new Error("Network error — is the server running?");
+  }
+
+  let data = null;
+  try {
+    data = await res.json();
+  } catch (err) {
+    data = {};
+  }
+
+  if (res.status === 401 && path !== "/api/auth/login") {
+    showLogin();
+    throw new Error(data.error || "Authentication required");
+  }
+
+  if (!res.ok) {
+    throw new Error(data.error || `Request failed (${res.status})`);
+  }
+
+  return data;
+}
+
+/* =========================================================================
+   TOASTS
+   ========================================================================= */
+
+function toast(message, type = "info") {
+  const stack = $("toastStack");
+  const el = document.createElement("div");
+  el.className = `toast ${type}`;
+  const icon = type === "success" ? "✓" : type === "error" ? "✕" : "ℹ";
+  el.innerHTML = `<span>${icon}</span><span>${escapeHtml(message)}</span>`;
+  stack.appendChild(el);
+  setTimeout(() => {
+    el.style.transition = "opacity .2s ease";
+    el.style.opacity = "0";
+    setTimeout(() => el.remove(), 220);
+  }, 3600);
+}
+
+async function apiAction(promiseFn, successMsg) {
+  try {
+    const result = await promiseFn();
+    if (successMsg) toast(successMsg, "success");
+    return result;
+  } catch (err) {
+    toast(err.message || "Something went wrong", "error");
+    throw err;
+  }
+}
+
+/* =========================================================================
+   MODAL SYSTEM
+   ========================================================================= */
+
+function openModal({ title, bodyHtml, footHtml, wide, onClose }) {
+  closeModal();
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.id = "activeModalOverlay";
+  overlay.innerHTML = `
+    <div class="modal ${wide ? "wide" : ""}" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <h3>${title}</h3>
+        <button class="icon-btn" onclick="closeModal()" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body">${bodyHtml}</div>
+      ${footHtml ? `<div class="modal-foot">${footHtml}</div>` : ""}
+    </div>
+  `;
+  overlay.addEventListener("mousedown", (e) => {
+    if (e.target === overlay) closeModal();
+  });
+  document.addEventListener("keydown", modalEscHandler);
+  $("modalRoot").appendChild(overlay);
+  overlay._onClose = onClose;
+  const firstInput = overlay.querySelector("input, select, textarea");
+  if (firstInput) setTimeout(() => firstInput.focus(), 30);
+}
+
+function modalEscHandler(e) {
+  if (e.key === "Escape") closeModal();
+}
+
+function closeModal() {
+  const overlay = $("activeModalOverlay");
+  if (overlay) {
+    if (typeof overlay._onClose === "function") overlay._onClose();
+    overlay.remove();
+  }
+  document.removeEventListener("keydown", modalEscHandler);
+}
+
+function confirmModal(message, onConfirm, opts) {
+  opts = opts || {};
+  openModal({
+    title: opts.title || "Are you sure?",
+    bodyHtml: `<p style="margin:0;font-size:14px;">${escapeHtml(message)}</p>`,
+    footHtml: `
+      <button class="btn secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn ${opts.danger === false ? "" : "danger"}" id="confirmModalBtn">${opts.confirmLabel || "Confirm"}</button>
+    `,
+  });
+  $("confirmModalBtn").onclick = async () => {
+    $("confirmModalBtn").disabled = true;
+    try {
+      await onConfirm();
+      closeModal();
+    } catch (err) {
+      $("confirmModalBtn").disabled = false;
     }
+  };
+}
 
-    function showLogin() {
-      $("loginView").classList.remove("hidden");
-      $("appView").classList.add("hidden");
-    }
+/* =========================================================================
+   SIDEBAR / THEME / POPOVERS
+   ========================================================================= */
 
-    function showApp() {
-      $("loginView").classList.add("hidden");
-      $("appView").classList.remove("hidden");
-    }
+function openSidebar() {
+  $("sidebar").classList.add("open");
+  $("sidebarScrim").classList.add("show");
+}
 
-    function showTab(name) {
-      const titles = {
-        dashboard: "Dashboard",
-        expenses: "Expenses",
-        income: "Income",
-        bills: "Bills",
-        budgets: "Budgets",
-        goals: "Goals",
-        settings: "Settings"
-      };
+function closeSidebar() {
+  $("sidebar").classList.remove("open");
+  $("sidebarScrim").classList.remove("show");
+}
 
-      $("pageTitle").textContent = titles[name] || "Dashboard";
+function toggleTheme() {
+  const html = document.documentElement;
+  const next = html.getAttribute("data-theme") === "dark" ? "light" : "dark";
+  html.setAttribute("data-theme", next);
+  try { localStorage.setItem("ff_theme", next); } catch (e) {}
+}
 
-      document.querySelectorAll(".nav-btn").forEach((btn) => {
-        btn.classList.toggle("active", btn.dataset.tab === name);
-      });
+function initTheme() {
+  let saved = null;
+  try { saved = localStorage.getItem("ff_theme"); } catch (e) {}
+  if (saved === "dark" || (!saved && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches)) {
+    document.documentElement.setAttribute("data-theme", "dark");
+  }
+}
 
-      document.querySelectorAll("[id^='tab-']").forEach((section) => {
-        section.classList.add("hidden");
-      });
+function closeAllPopovers(except) {
+  ["notifPopover", "userMenu"].forEach((id) => {
+    if (id !== except) $(id).classList.add("hidden");
+  });
+}
 
-      $(`tab-${name}`).classList.remove("hidden");
+function toggleNotifPopover() {
+  const el = $("notifPopover");
+  const willOpen = el.classList.contains("hidden");
+  closeAllPopovers("notifPopover");
+  el.classList.toggle("hidden");
+  if (willOpen) loadNotifications();
+}
 
-      if (name === "dashboard") loadDashboard();
-      if (name === "expenses") loadExpenses();
-      if (name === "income") loadIncome();
-      if (name === "bills") loadBills();
-      if (name === "budgets") loadBudgets();
-      if (name === "goals") loadGoals();
-      if (name === "settings") loadSettings();
-    }
+function toggleUserMenu() {
+  const el = $("userMenu");
+  closeAllPopovers("userMenu");
+  el.classList.toggle("hidden");
+}
 
-    function toggleForm(id) {
-      $(id).classList.toggle("hidden");
-    }
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".popover-wrap")) closeAllPopovers();
+});
 
-    async function api(path, method = "GET", body = null) {
-      const options = {
-        method,
-        headers: {
-          "Content-Type": "application/json"
-        },
-        credentials: "same-origin"
-      };
+/* =========================================================================
+   NAVIGATION
+   ========================================================================= */
 
-      if (csrf && ["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
-        options.headers["X-CSRF-Token"] = csrf;
-      }
+const TAB_META = {
+  dashboard: { title: "Dashboard", sub: "A quick look at where things stand" },
+  expenses: { title: "Expenses", sub: "Everything your family spent" },
+  income: { title: "Income", sub: "Everything coming in" },
+  bills: { title: "Bills", sub: "What's owed, paid, and overdue" },
+  budgets: { title: "Budgets", sub: "Category spending limits" },
+  goals: { title: "Goals", sub: "Savings targets and progress" },
+  recurring: { title: "Recurring", sub: "Automated schedules" },
+  reports: { title: "Reports", sub: "Trends across the year" },
+  accounts: { title: "Accounts", sub: "Balances and net worth" },
+  payees: { title: "Payees", sub: "Vendors and billers" },
+  members: { title: "Members", sub: "Household members" },
+  categories: { title: "Categories", sub: "Organize transactions" },
+  settings: { title: "Settings", sub: "Family details and preferences" },
+  admin: { title: "Admin", sub: "Backups and audit trail" },
+};
 
-      if (body) {
-        options.body = JSON.stringify(body);
-      }
+let currentTab = "dashboard";
 
-      const res = await fetch(path, options);
+function showTab(name) {
+  if (!TAB_META[name]) name = "dashboard";
+  currentTab = name;
 
-      let data = null;
-      try {
-        data = await res.json();
-      } catch (err) {
-        data = {};
-      }
+  const meta = TAB_META[name];
+  $("pageTitle").textContent = meta.title;
+  $("pageSubtitle").textContent = meta.sub;
 
-      if (res.status === 401 && path !== "/api/auth/login") {
-        showLogin();
-        throw new Error("Authentication required");
-      }
+  qsa(".nav-btn").forEach((btn) => btn.classList.toggle("active", btn.dataset.tab === name));
+  qsa("[id^='tab-']").forEach((section) => section.classList.add("hidden"));
+  $(`tab-${name}`).classList.remove("hidden");
 
-      if (!res.ok) {
-        throw new Error(data.error || `Request failed with status ${res.status}`);
-      }
+  closeSidebar();
 
-      return data;
-    }
+  const loaders = {
+    dashboard: loadDashboard,
+    expenses: () => loadExpenses(0),
+    income: () => loadIncome(0),
+    bills: () => loadBills(0),
+    budgets: loadBudgets,
+    goals: loadGoals,
+    recurring: loadRecurring,
+    reports: initReportsTab,
+    accounts: loadAccounts,
+    payees: () => loadPayees(0),
+    members: loadMembers,
+    categories: () => loadCategories(),
+    settings: loadSettingsView,
+    admin: () => { loadAudit(0); loadUsers(); $("adminWhoAmI").textContent = `${state.user.username} (${state.user.role})`; },
+  };
 
-    async function login(event) {
-      event.preventDefault();
-      $("loginError").textContent = "";
+  if (loaders[name]) loaders[name]();
+}
 
-      try {
-        const data = await api("/api/auth/login", "POST", {
-          username: $("loginUsername").value,
-          password: $("loginPassword").value
-        });
+const debouncedReload = debounce((entity) => {
+  const loaders = { expenses: loadExpenses, income: loadIncome, bills: loadBills, payees: loadPayees };
+  if (loaders[entity]) loaders[entity](0);
+}, 350);
 
-        csrf = data.csrf_token;
-        $("userLabel").textContent = `${data.user.username} • ${data.user.role}`;
-        showApp();
-        showTab("dashboard");
-      } catch (err) {
-        $("loginError").textContent = err.message;
-      }
-    }
+/* =========================================================================
+   PAGINATION HELPER
+   ========================================================================= */
 
-    async function logout() {
-      try {
-        await api("/api/auth/logout", "POST");
-      } catch (err) {
-        // Ignore logout errors.
-      }
+function renderPagination(el, total, limit, offset, onPage) {
+  if (total <= limit) { el.innerHTML = ""; return; }
+  const start = total === 0 ? 0 : offset + 1;
+  const end = Math.min(offset + limit, total);
+  el.innerHTML = `
+    <span>Showing ${start}–${end} of ${total}</span>
+    <span style="display:flex;gap:8px;">
+      <button class="btn secondary small" ${offset <= 0 ? "disabled" : ""} id="pagPrevBtn">← Prev</button>
+      <button class="btn secondary small" ${end >= total ? "disabled" : ""} id="pagNextBtn">Next →</button>
+    </span>
+  `;
+  const prevBtn = qs("#pagPrevBtn", el);
+  const nextBtn = qs("#pagNextBtn", el);
+  if (prevBtn) prevBtn.onclick = () => onPage(Math.max(0, offset - limit));
+  if (nextBtn) nextBtn.onclick = () => onPage(offset + limit);
+}
 
-      csrf = null;
-      showLogin();
-    }
+/* =========================================================================
+   AUTH
+   ========================================================================= */
 
-    async function loadDashboard() {
-      const data = await api("/api/dashboard");
+function showLogin() {
+  $("loginView").classList.remove("hidden");
+  $("appView").classList.add("hidden");
+  state.user = null;
+  state.csrf = null;
+}
 
-      const stats = [
-        ["Monthly Income", data.monthly_income],
-        ["Monthly Spending", data.monthly_expenses],
-        ["Monthly Savings", data.monthly_savings],
-        ["Savings Rate", `${data.savings_rate}%`],
-        ["Pending Bills", data.pending_bills],
-        ["Overdue Bills", data.overdue_count],
-        ["Annual Income", data.annual_income],
-        ["Annual Spending", data.annual_expenses]
-      ];
+function showApp() {
+  $("loginView").classList.add("hidden");
+  $("appView").classList.remove("hidden");
+}
 
-      $("dashboardStats").innerHTML = stats.map(([label, value]) => `
-        <div class="card stat">
-          <div class="label">${escapeHtml(label)}</div>
-          <div class="value">${escapeHtml(value)}</div>
+async function login(event) {
+  event.preventDefault();
+  $("loginError").textContent = "";
+  const btn = $("loginSubmitBtn");
+  btn.disabled = true;
+
+  try {
+    const data = await api("/api/auth/login", "POST", {
+      username: $("loginUsername").value,
+      password: $("loginPassword").value,
+    });
+
+    state.csrf = data.csrf_token;
+    state.user = data.user;
+    await afterAuth();
+  } catch (err) {
+    $("loginError").textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function logout() {
+  try { await api("/api/auth/logout", "POST"); } catch (err) { /* ignore */ }
+  showLogin();
+  toast("Signed out", "info");
+}
+
+function openChangePasswordModal() {
+  closeAllPopovers();
+  showTab("settings");
+  setTimeout(() => $("pwCurrent") && $("pwCurrent").focus(), 50);
+}
+
+async function changePassword(event) {
+  event.preventDefault();
+  $("pwError").textContent = "";
+  try {
+    await api("/api/auth/password", "POST", {
+      current_password: $("pwCurrent").value,
+      new_password: $("pwNew").value,
+    });
+    $("passwordForm").reset();
+    toast("Password updated", "success");
+  } catch (err) {
+    $("pwError").textContent = err.message;
+  }
+}
+
+function renderUserChip() {
+  if (!state.user) return;
+  $("userName").textContent = state.user.username;
+  $("userRole").textContent = state.user.role;
+  $("userAvatar").textContent = state.user.username.slice(0, 1).toUpperCase();
+  applyRoleGates();
+}
+
+async function afterAuth() {
+  renderUserChip();
+  showApp();
+  await loadAllCaches();
+  showTab("dashboard");
+  refreshNotifBadge();
+  if (state.notifTimer) clearInterval(state.notifTimer);
+  state.notifTimer = setInterval(refreshNotifBadge, 60000);
+}
+
+async function bootstrap() {
+  initTheme();
+  try {
+    const data = await api("/api/me");
+    state.csrf = data.csrf_token;
+    state.user = data.user;
+    await afterAuth();
+  } catch (err) {
+    showLogin();
+  }
+}
+
+$("loginForm").addEventListener("submit", login);
+
+
+/* =========================================================================
+   SHARED CACHES (members, accounts, payees, categories, settings)
+   ========================================================================= */
+
+async function loadAllCaches() {
+  await Promise.all([loadSettingsCache(), loadMembersCache(), loadAccountsCache(), loadPayeesCache(), loadCategoriesCache()]);
+}
+
+async function loadSettingsCache() {
+  try {
+    const data = await api("/api/settings");
+    state.settings = data;
+  } catch (err) { /* ignore, keep defaults */ }
+}
+
+async function loadMembersCache() {
+  try { state.caches.members = await api("/api/members"); } catch (err) { state.caches.members = []; }
+}
+
+async function loadAccountsCache() {
+  try { state.caches.accounts = await api("/api/accounts"); } catch (err) { state.caches.accounts = []; }
+}
+
+async function loadPayeesCache() {
+  try {
+    const data = await api("/api/payees?limit=200");
+    state.caches.payees = data.items || [];
+  } catch (err) { state.caches.payees = []; }
+}
+
+async function loadCategoriesCache() {
+  try {
+    state.caches.categories.expense = await api("/api/categories?type=expense");
+    state.caches.categories.income = await api("/api/categories?type=income");
+    state.caches.categories.bill = await api("/api/categories?type=bill");
+  } catch (err) { /* ignore */ }
+}
+
+function optionsHtml(list, { value, label, selected, blankLabel }) {
+  let out = blankLabel !== undefined ? `<option value="">${escapeHtml(blankLabel)}</option>` : "";
+  out += list.map((item) => {
+    const v = typeof value === "function" ? value(item) : item[value];
+    const l = typeof label === "function" ? label(item) : item[label];
+    const sel = String(v) === String(selected) ? "selected" : "";
+    return `<option value="${escapeHtml(v)}" ${sel}>${escapeHtml(l)}</option>`;
+  }).join("");
+  return out;
+}
+
+function categoryOptions(type, selected) {
+  return optionsHtml(state.caches.categories[type] || [], { value: "name", label: "name", selected, blankLabel: null });
+}
+
+function memberOptions(selected) {
+  return optionsHtml(state.caches.members, { value: "name", label: "name", selected, blankLabel: "— None —" });
+}
+
+function accountOptions(selected) {
+  return optionsHtml(state.caches.accounts, { value: "id", label: (a) => `${a.name} (${a.account_type})`, selected, blankLabel: "— None —" });
+}
+
+function payeeOptions(selected) {
+  return optionsHtml(state.caches.payees, { value: "id", label: "name", selected, blankLabel: "— Free text below —" });
+}
+
+function fillCategoryFilterSelect(selectEl, type) {
+  if (!selectEl) return;
+  const current = selectEl.value;
+  selectEl.innerHTML = `<option value="">All categories</option>` + categoryOptions(type, current);
+  selectEl.value = current;
+}
+
+function fillMemberFilterSelect(selectEl) {
+  if (!selectEl) return;
+  const current = selectEl.value;
+  selectEl.innerHTML = `<option value="">All members</option>` +
+    optionsHtml(state.caches.members, { value: "name", label: "name", selected: current });
+  selectEl.value = current;
+}
+
+/* =========================================================================
+   LIGHTWEIGHT SVG CHARTS (no external dependencies)
+   ========================================================================= */
+
+function svgEl(w, h, inner, viewBox) {
+  return `<svg viewBox="${viewBox || `0 0 ${w} ${h}`}" width="100%" height="${h}" role="img" style="overflow:visible;font-family:var(--font-mono);">${inner}</svg>`;
+}
+
+function cssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+// Grouped bar chart: data = [{label, values:[{key,value,color}]}]
+function groupedBarChart(data, opts) {
+  opts = opts || {};
+  const w = opts.width || 640, h = opts.height || 220;
+  const padL = 44, padB = 26, padT = 10, padR = 10;
+  const chartW = w - padL - padR, chartH = h - padT - padB;
+
+  if (!data.length) return `<div class="empty-state" style="padding:30px;">No data for this period yet.</div>`;
+
+  const allVals = data.flatMap((d) => d.values.map((v) => v.value));
+  const maxVal = Math.max(1, ...allVals);
+  const niceMax = maxVal <= 0 ? 1 : Math.pow(10, Math.floor(Math.log10(maxVal))) * Math.ceil(maxVal / Math.pow(10, Math.floor(Math.log10(maxVal))));
+
+  const groupW = chartW / data.length;
+  const seriesCount = data[0].values.length;
+  const barGap = 3;
+  const barW = Math.max(4, (groupW - 16) / seriesCount - barGap);
+
+  let bars = "";
+  let gridLines = "";
+  const gridCount = 4;
+  for (let i = 0; i <= gridCount; i++) {
+    const y = padT + chartH - (chartH * i) / gridCount;
+    gridLines += `<line x1="${padL}" y1="${y}" x2="${w - padR}" y2="${y}" stroke="${cssVar('--line')}" stroke-width="1"/>`;
+    gridLines += `<text x="${padL - 8}" y="${y + 3}" font-size="9" text-anchor="end" fill="${cssVar('--muted')}">${Math.round((niceMax * i) / gridCount)}</text>`;
+  }
+
+  data.forEach((group, gi) => {
+    const groupX = padL + gi * groupW + 8;
+    group.values.forEach((v, vi) => {
+      const barH = niceMax > 0 ? (Math.abs(v.value) / niceMax) * chartH : 0;
+      const x = groupX + vi * (barW + barGap);
+      const y = padT + chartH - barH;
+      bars += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(0,barH).toFixed(1)}" rx="2" fill="${v.color}"><title>${escapeHtml(group.label)} — ${escapeHtml(v.key)}: ${v.value.toFixed(2)}</title></rect>`;
+    });
+    bars += `<text x="${(groupX + groupW / 2 - 8).toFixed(1)}" y="${h - 6}" font-size="10" text-anchor="middle" fill="${cssVar('--muted')}">${escapeHtml(group.label)}</text>`;
+  });
+
+  return svgEl(w, h, gridLines + bars);
+}
+
+// Simple donut chart: data = [{label, value, color}]
+function donutChart(data, opts) {
+  opts = opts || {};
+  const size = opts.size || 180;
+  const cx = size / 2, cy = size / 2, r = size / 2 - 10, inner = r * 0.6;
+  const total = data.reduce((s, d) => s + d.value, 0);
+
+  if (!total) return `<div class="empty-state" style="padding:24px;">No data yet.</div>`;
+
+  let angle = -Math.PI / 2;
+  let paths = "";
+
+  data.forEach((d) => {
+    const frac = d.value / total;
+    const nextAngle = angle + frac * Math.PI * 2;
+    const x1 = cx + r * Math.cos(angle), y1 = cy + r * Math.sin(angle);
+    const x2 = cx + r * Math.cos(nextAngle), y2 = cy + r * Math.sin(nextAngle);
+    const ix1 = cx + inner * Math.cos(angle), iy1 = cy + inner * Math.sin(angle);
+    const ix2 = cx + inner * Math.cos(nextAngle), iy2 = cy + inner * Math.sin(nextAngle);
+    const largeArc = frac > 0.5 ? 1 : 0;
+    paths += `<path d="M ${ix1.toFixed(2)} ${iy1.toFixed(2)} L ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r} ${r} 0 ${largeArc} 1 ${x2.toFixed(2)} ${y2.toFixed(2)} L ${ix2.toFixed(2)} ${iy2.toFixed(2)} A ${inner} ${inner} 0 ${largeArc} 0 ${ix1.toFixed(2)} ${iy1.toFixed(2)} Z" fill="${d.color}"><title>${escapeHtml(d.label)}: ${d.value.toFixed(2)}</title></path>`;
+    angle = nextAngle;
+  });
+
+  return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}">${paths}</svg>`;
+}
+
+const CHART_PALETTE = ["#1F4B3F", "#A97A2C", "#2E5C8A", "#9C3F2E", "#6B8F71", "#C79A4B", "#7E9BB8", "#B57160", "#4E7566", "#D6B27A"];
+
+function chartLegend(items) {
+  return `<div class="chart-legend">${items.map((it) => `
+    <div class="li"><span class="sw" style="background:${it.color}"></span>${escapeHtml(it.label)}</div>
+  `).join("")}</div>`;
+}
+
+
+/* =========================================================================
+   DASHBOARD
+   ========================================================================= */
+
+async function loadDashboard() {
+  const grid = $("dashboardStats");
+  grid.innerHTML = Array.from({ length: 4 }).map(() => `
+    <div class="card stat-card"><div class="skeleton-row"><td style="display:block;height:40px;"></td></div></div>
+  `).join("");
+
+  let data;
+  try {
+    data = await api("/api/dashboard");
+  } catch (err) {
+    toast(err.message, "error");
+    return;
+  }
+
+  const stats = [
+    { label: "Monthly Income", value: data.monthly_income, tone: "pos" },
+    { label: "Monthly Spending", value: data.monthly_expenses, tone: "neg" },
+    { label: "Monthly Savings", value: data.monthly_savings, tone: data.monthly_savings >= 0 ? "pos" : "neg", delta: `${data.savings_rate}% savings rate` },
+    { label: "Pending Bills", value: data.pending_bills, tone: "neutral", delta: data.overdue_count > 0 ? `${data.overdue_count} overdue · ${fmtMoney(data.overdue_amount, { plain: true })}` : "None overdue" },
+  ];
+
+  grid.innerHTML = stats.map((s) => `
+    <div class="card stat-card">
+      <div class="label">${escapeHtml(s.label)}</div>
+      <div class="value ${s.tone === 'pos' ? 'amt-pos' : s.tone === 'neg' ? 'amt-neg' : ''}">${fmtMoney(s.value, { plain: true })}</div>
+      ${s.delta ? `<div class="delta">${escapeHtml(s.delta)}</div>` : ""}
+    </div>
+  `).join("");
+
+  // Cash flow chart
+  const cfData = data.monthly.map((m) => ({
+    label: m.month,
+    values: [
+      { key: "Income", value: m.income, color: CHART_PALETTE[0] },
+      { key: "Outflow", value: m.expenses, color: CHART_PALETTE[3] },
+    ],
+  }));
+  $("dashboardCashflowChart").innerHTML = groupedBarChart(cfData, { height: 200 }) +
+    chartLegend([{ label: "Income", color: CHART_PALETTE[0] }, { label: "Outflow", color: CHART_PALETTE[3] }]);
+
+  // Top categories donut
+  if (data.top_cats.length) {
+    const catData = data.top_cats.map((c, i) => ({ label: c.category, value: c.total, color: CHART_PALETTE[i % CHART_PALETTE.length] }));
+    $("dashboardTopCats").innerHTML = `
+      <div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap;">
+        ${donutChart(catData, { size: 150 })}
+        <div style="flex:1;min-width:160px;">
+          ${catData.map((c) => `
+            <div style="display:flex;justify-content:space-between;align-items:center;font-size:12.5px;padding:4px 0;">
+              <span style="display:flex;align-items:center;gap:6px;"><span class="chart-legend" style="margin:0;"></span><span style="width:9px;height:9px;border-radius:2px;background:${c.color};display:inline-block;"></span>${escapeHtml(c.label)}</span>
+              <span class="num">${fmtMoney(c.value, { plain: true })}</span>
+            </div>
+          `).join("")}
         </div>
-      `).join("");
+      </div>
+    `;
+  } else {
+    $("dashboardTopCats").innerHTML = `<div class="empty-state" style="padding:20px;"><div class="ic">◎</div><div class="t">No expenses this month yet</div></div>`;
+  }
 
-      $("recentExpenses").innerHTML = data.recent_expenses.length
-        ? `
-          <table>
-            <thead>
-              <tr>
-                <th>Title</th>
-                <th>Category</th>
-                <th>Date</th>
-                <th class="right">Amount</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${data.recent_expenses.map((item) => `
-                <tr>
-                  <td>${escapeHtml(item.title)}</td>
-                  <td>${escapeHtml(item.category)}</td>
-                  <td>${escapeHtml(item.expense_date)}</td>
-                  <td class="right">${escapeHtml(item.amount)}</td>
-                </tr>
-              `).join("")}
-            </tbody>
-          </table>
-        `
-        : `<p class="muted">No expenses yet.</p>`;
+  // Budget summary
+  const bs = data.budget_summary;
+  const usedPct = bs.monthly_budget > 0 ? Math.min(100, Math.round((bs.monthly_actual / bs.monthly_budget) * 100)) : 0;
+  $("dashboardBudget").innerHTML = bs.monthly_budget > 0 ? `
+    <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:8px;">
+      <span class="muted">Spent ${fmtMoney(bs.monthly_actual, { plain: true })} of ${fmtMoney(bs.monthly_budget, { plain: true })}</span>
+      <span class="${bs.monthly_remaining < 0 ? 'amt-neg' : 'amt-pos'} num">${fmtMoney(bs.monthly_remaining, { plain: true })} left</span>
+    </div>
+    <div class="progress-track"><div class="progress-fill ${usedPct >= 100 ? 'over' : usedPct >= 80 ? 'warn' : ''}" style="width:${usedPct}%;"></div></div>
+    <div class="field-hint" style="margin-top:8px;">${usedPct}% of combined monthly budgets used</div>
+  ` : `<div class="empty-state" style="padding:20px;"><div class="ic">▦</div><div class="t">No monthly budgets set</div><button class="btn small" onclick="showTab('budgets')">Set a budget →</button></div>`;
 
-      $("recentIncome").innerHTML = data.recent_income.length
-        ? `
-          <table>
-            <thead>
-              <tr>
-                <th>Title</th>
-                <th>Category</th>
-                <th>Date</th>
-                <th class="right">Amount</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${data.recent_income.map((item) => `
-                <tr>
-                  <td>${escapeHtml(item.title)}</td>
-                  <td>${escapeHtml(item.category)}</td>
-                  <td>${escapeHtml(item.income_date)}</td>
-                  <td class="right">${escapeHtml(item.amount)}</td>
-                </tr>
-              `).join("")}
-            </tbody>
-          </table>
-        `
-        : `<p class="muted">No income yet.</p>`;
+  // Goals
+  $("dashboardGoals").innerHTML = data.goals.length ? data.goals.map((g) => `
+    <div style="margin-bottom:14px;">
+      <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:5px;">
+        <strong>${escapeHtml(g.name)}</strong>
+        <span class="muted num">${fmtMoney(g.current, { plain: true })} / ${fmtMoney(g.target, { plain: true })}</span>
+      </div>
+      <div class="progress-track"><div class="progress-fill" style="width:${Math.min(100, g.progress_pct)}%;"></div></div>
+    </div>
+  `).join("") : `<div class="empty-state" style="padding:20px;"><div class="ic">◎</div><div class="t">No goals yet</div><button class="btn small" onclick="showTab('goals')">Create one →</button></div>`;
+
+  // Recent tables
+  $("dashboardRecentExpenses").innerHTML = simpleMiniTable(data.recent_expenses, [
+    { key: "title", label: "Title" },
+    { key: "category", label: "Category" },
+    { key: "expense_date", label: "Date", fmt: fmtDate },
+    { key: "amount", label: "Amount", right: true, money: true, neg: true },
+  ]);
+
+  $("dashboardRecentIncome").innerHTML = simpleMiniTable(data.recent_income, [
+    { key: "title", label: "Title" },
+    { key: "category", label: "Category" },
+    { key: "income_date", label: "Date", fmt: fmtDate },
+    { key: "amount", label: "Amount", right: true, money: true },
+  ]);
+}
+
+function simpleMiniTable(rows, cols) {
+  if (!rows.length) return `<div class="empty-state" style="padding:26px;"><div class="ic">—</div><div class="t">Nothing here yet</div></div>`;
+  return `
+    <table>
+      <thead><tr>${cols.map((c) => `<th class="${c.right ? 'right' : ''}">${escapeHtml(c.label)}</th>`).join("")}</tr></thead>
+      <tbody>
+        ${rows.map((r) => `
+          <tr>${cols.map((c) => {
+            let v = r[c.key];
+            if (c.fmt) v = c.fmt(v);
+            else if (c.money) v = fmtMoney(v, { neutral: !c.neg });
+            else v = escapeHtml(v ?? "");
+            return `<td class="${c.right ? 'right' : ''}">${v}</td>`;
+          }).join("")}</tr>
+        `).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+
+/* =========================================================================
+   EXPENSES
+   ========================================================================= */
+
+const expensesState = { limit: 25, offset: 0 };
+
+async function loadExpenses(offset) {
+  if (typeof offset === "number") expensesState.offset = offset;
+  fillCategoryFilterSelect($("expensesCategoryFilter"), "expense");
+  fillMemberFilterSelect($("expensesMemberFilter"));
+
+  const params = new URLSearchParams({
+    limit: expensesState.limit, offset: expensesState.offset,
+    q: $("expensesSearch").value.trim(),
+    category: $("expensesCategoryFilter").value,
+    member: $("expensesMemberFilter").value,
+    from: $("expensesFrom").value,
+    to: $("expensesTo").value,
+  });
+  [...params.keys()].forEach((k) => { if (!params.get(k)) params.delete(k); });
+
+  let data;
+  try {
+    data = await api(`/api/expenses?${params.toString()}`);
+  } catch (err) { toast(err.message, "error"); return; }
+
+  $("expensesSub").textContent = `${data.total} expense${data.total === 1 ? "" : "s"} tracked`;
+
+  $("expensesTable").innerHTML = data.items.length ? `
+    <table>
+      <thead><tr>
+        <th>Title</th><th>Category</th><th>Date</th><th>Member</th><th>Store</th><th class="right">Amount</th><th></th>
+      </tr></thead>
+      <tbody>
+        ${data.items.map((item) => `
+          <tr>
+            <td class="wrap">${escapeHtml(item.title)}${item.tags ? `<div class="field-hint">${escapeHtml(item.tags)}</div>` : ""}</td>
+            <td>${escapeHtml(item.category)}</td>
+            <td>${fmtDate(item.expense_date)}</td>
+            <td>${item.member ? `<span class="avatar-tag"><span class="dot"></span>${escapeHtml(item.member)}</span>` : "—"}</td>
+            <td>${escapeHtml(item.store || "—")}</td>
+            <td class="right">${fmtMoney(item.amount, { neutral: true })}</td>
+            <td>
+              <div class="row-actions">
+                <button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="openExpenseModal(${item.id})">Edit</button>
+                <button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="confirmDeleteExpense(${item.id})">Delete</button>
+              </div>
+            </td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  ` : `<div class="empty-state"><div class="ic">−</div><div class="t">No expenses match these filters</div></div>`;
+
+  applyRoleGates();
+  renderPagination($("expensesPagination"), data.total, data.limit, data.offset, loadExpenses);
+}
+
+function expenseFormHtml(item) {
+  item = item || {};
+  return `
+    <form id="expenseForm" class="form-grid" onsubmit="saveExpense(event, ${item.id || "null"})">
+      <div class="field"><label>Title *</label><input id="expTitle" required value="${escapeHtml(item.title || "")}" /></div>
+      <div class="field"><label>Amount *</label><input id="expAmount" type="number" step="0.01" min="0.01" required value="${item.amount ?? ""}" /></div>
+      <div class="field"><label>Category *</label><select id="expCategory">${categoryOptions("expense", item.category)}</select></div>
+      <div class="field"><label>Date *</label><input id="expDate" type="date" required value="${item.expense_date || todayIso()}" /></div>
+      <div class="field"><label>Store / Vendor</label><input id="expStore" value="${escapeHtml(item.store || "")}" /></div>
+      <div class="field"><label>Member</label><select id="expMember">${memberOptions(item.member)}</select></div>
+      <div class="field"><label>Account</label><select id="expAccount">${accountOptions(item.account_id)}</select></div>
+      <div class="field"><label>Receipt Ref</label><input id="expReceipt" value="${escapeHtml(item.receipt_ref || "")}" /></div>
+      <div class="field full"><label>Tags (comma-separated)</label><input id="expTags" value="${escapeHtml(item.tags || "")}" /></div>
+      <div class="field full"><label>Notes</label><textarea id="expNotes">${escapeHtml(item.notes || "")}</textarea></div>
+    </form>
+  `;
+}
+
+function openExpenseModal(id) {
+  const launch = (item) => {
+    openModal({
+      title: id ? "Edit Expense" : "Add Expense",
+      bodyHtml: expenseFormHtml(item),
+      footHtml: `
+        <button class="btn secondary" onclick="closeModal()">Cancel</button>
+        <button class="btn" onclick="document.getElementById('expenseForm').requestSubmit()">${id ? "Save Changes" : "Add Expense"}</button>
+      `,
+    });
+  };
+  if (id) {
+    api(`/api/expenses/${id}`).then(launch).catch((err) => toast(err.message, "error"));
+  } else {
+    launch({});
+  }
+}
+
+async function saveExpense(event, id) {
+  event.preventDefault();
+  const payload = {
+    title: $("expTitle").value,
+    amount: $("expAmount").value,
+    category: $("expCategory").value,
+    expense_date: $("expDate").value,
+    store: $("expStore").value,
+    member: $("expMember").value,
+    account_id: $("expAccount").value || null,
+    receipt_ref: $("expReceipt").value,
+    tags: $("expTags").value,
+    notes: $("expNotes").value,
+  };
+  try {
+    if (id) await api(`/api/expenses/${id}`, "PUT", payload);
+    else await api("/api/expenses", "POST", payload);
+    closeModal();
+    toast(id ? "Expense updated" : "Expense added", "success");
+    loadExpenses();
+    if (currentTab === "dashboard") loadDashboard();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+function confirmDeleteExpense(id) {
+  confirmModal("Delete this expense? This can't be undone.", async () => {
+    await apiAction(() => api(`/api/expenses/${id}`, "DELETE"), "Expense deleted");
+    loadExpenses();
+  });
+}
+
+/* =========================================================================
+   INCOME
+   ========================================================================= */
+
+const incomeState = { limit: 25, offset: 0 };
+
+async function loadIncome(offset) {
+  if (typeof offset === "number") incomeState.offset = offset;
+  fillCategoryFilterSelect($("incomeCategoryFilter"), "income");
+  fillMemberFilterSelect($("incomeMemberFilter"));
+
+  const params = new URLSearchParams({
+    limit: incomeState.limit, offset: incomeState.offset,
+    q: $("incomeSearch").value.trim(),
+    category: $("incomeCategoryFilter").value,
+    member: $("incomeMemberFilter").value,
+    from: $("incomeFrom").value,
+    to: $("incomeTo").value,
+  });
+  [...params.keys()].forEach((k) => { if (!params.get(k)) params.delete(k); });
+
+  let data;
+  try {
+    data = await api(`/api/income?${params.toString()}`);
+  } catch (err) { toast(err.message, "error"); return; }
+
+  $("incomeTable").innerHTML = data.items.length ? `
+    <table>
+      <thead><tr>
+        <th>Title</th><th>Category</th><th>Date</th><th>Member</th><th>Source</th><th class="right">Amount</th><th></th>
+      </tr></thead>
+      <tbody>
+        ${data.items.map((item) => `
+          <tr>
+            <td class="wrap">${escapeHtml(item.title)}${item.tags ? `<div class="field-hint">${escapeHtml(item.tags)}</div>` : ""}</td>
+            <td>${escapeHtml(item.category)}</td>
+            <td>${fmtDate(item.income_date)}</td>
+            <td>${item.member ? `<span class="avatar-tag"><span class="dot"></span>${escapeHtml(item.member)}</span>` : "—"}</td>
+            <td>${escapeHtml(item.source || "—")}</td>
+            <td class="right">${fmtMoney(item.amount)}</td>
+            <td>
+              <div class="row-actions">
+                <button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="openIncomeModal(${item.id})">Edit</button>
+                <button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="confirmDeleteIncome(${item.id})">Delete</button>
+              </div>
+            </td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  ` : `<div class="empty-state"><div class="ic">+</div><div class="t">No income matches these filters</div></div>`;
+
+  applyRoleGates();
+  renderPagination($("incomePagination"), data.total, data.limit, data.offset, loadIncome);
+}
+
+function incomeFormHtml(item) {
+  item = item || {};
+  return `
+    <form id="incomeForm" class="form-grid" onsubmit="saveIncome(event, ${item.id || "null"})">
+      <div class="field"><label>Title *</label><input id="incTitle" required value="${escapeHtml(item.title || "")}" /></div>
+      <div class="field"><label>Amount *</label><input id="incAmount" type="number" step="0.01" min="0.01" required value="${item.amount ?? ""}" /></div>
+      <div class="field"><label>Category *</label><select id="incCategory">${categoryOptions("income", item.category)}</select></div>
+      <div class="field"><label>Date *</label><input id="incDate" type="date" required value="${item.income_date || todayIso()}" /></div>
+      <div class="field"><label>Source</label><input id="incSource" value="${escapeHtml(item.source || "")}" /></div>
+      <div class="field"><label>Member</label><select id="incMember">${memberOptions(item.member)}</select></div>
+      <div class="field"><label>Account</label><select id="incAccount">${accountOptions(item.account_id)}</select></div>
+      <div class="field"><label>Tags (comma-separated)</label><input id="incTags" value="${escapeHtml(item.tags || "")}" /></div>
+      <div class="field full"><label>Notes</label><textarea id="incNotes">${escapeHtml(item.notes || "")}</textarea></div>
+    </form>
+  `;
+}
+
+function openIncomeModal(id) {
+  const launch = (item) => {
+    openModal({
+      title: id ? "Edit Income" : "Add Income",
+      bodyHtml: incomeFormHtml(item),
+      footHtml: `
+        <button class="btn secondary" onclick="closeModal()">Cancel</button>
+        <button class="btn" onclick="document.getElementById('incomeForm').requestSubmit()">${id ? "Save Changes" : "Add Income"}</button>
+      `,
+    });
+  };
+  if (id) {
+    api(`/api/income/${id}`).then(launch).catch((err) => toast(err.message, "error"));
+  } else {
+    launch({});
+  }
+}
+
+async function saveIncome(event, id) {
+  event.preventDefault();
+  const payload = {
+    title: $("incTitle").value,
+    amount: $("incAmount").value,
+    category: $("incCategory").value,
+    income_date: $("incDate").value,
+    source: $("incSource").value,
+    member: $("incMember").value,
+    account_id: $("incAccount").value || null,
+    tags: $("incTags").value,
+    notes: $("incNotes").value,
+  };
+  try {
+    if (id) await api(`/api/income/${id}`, "PUT", payload);
+    else await api("/api/income", "POST", payload);
+    closeModal();
+    toast(id ? "Income updated" : "Income added", "success");
+    loadIncome();
+    if (currentTab === "dashboard") loadDashboard();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+function confirmDeleteIncome(id) {
+  confirmModal("Delete this income entry? This can't be undone.", async () => {
+    await apiAction(() => api(`/api/income/${id}`, "DELETE"), "Income deleted");
+    loadIncome();
+  });
+}
+
+function exportEntity(entity) {
+  window.open(`/api/${entity}/export`, "_blank");
+}
+
+
+/* =========================================================================
+   BILLS
+   ========================================================================= */
+
+const billsState = { limit: 25, offset: 0 };
+
+function billStatusPill(status) {
+  const map = { Paid: "success", Pending: "warning", "Partially Paid": "info", Void: "", Overdue: "danger" };
+  const cls = map[status] ?? "";
+  return `<span class="pill ${cls}">${escapeHtml(status)}</span>`;
+}
+
+async function loadBills(offset) {
+  if (typeof offset === "number") billsState.offset = offset;
+  fillCategoryFilterSelect($("billsCategoryFilter"), "bill");
+
+  const statusVal = $("billsStatusFilter").value;
+  const params = new URLSearchParams({
+    limit: billsState.limit, offset: billsState.offset,
+    q: $("billsSearch").value.trim(),
+    status: statusVal,
+    category: $("billsCategoryFilter").value,
+    from: $("billsFrom").value,
+    to: $("billsTo").value,
+  });
+  [...params.keys()].forEach((k) => { if (!params.get(k)) params.delete(k); });
+
+  let data;
+  try {
+    data = await api(`/api/bills?${params.toString()}`);
+  } catch (err) { toast(err.message, "error"); return; }
+
+  $("billsTable").innerHTML = data.items.length ? `
+    <table>
+      <thead><tr>
+        <th>Bill #</th><th>Payee</th><th>Category</th><th>Due Date</th>
+        <th class="right">Total</th><th class="right">Paid</th><th class="right">Balance</th><th>Status</th><th></th>
+      </tr></thead>
+      <tbody>
+        ${data.items.map((item) => `
+          <tr>
+            <td class="num">${escapeHtml(item.bill_number)}</td>
+            <td>${escapeHtml(item.payee_name)}</td>
+            <td>${escapeHtml(item.bill_category)}</td>
+            <td>${fmtDate(item.due_date)}</td>
+            <td class="right">${fmtMoney(item.total_amount, { neutral: true })}</td>
+            <td class="right">${fmtMoney(item.paid_amount, { neutral: true })}</td>
+            <td class="right">${fmtMoney(item.balance, { neutral: true })}</td>
+            <td>${billStatusPill(item.display_status || item.status)}</td>
+            <td>
+              <div class="row-actions">
+                <button class="btn ghost small" onclick="printBill(${item.id})">Print</button>
+                ${item.status !== "Paid" && item.status !== "Void" ? `<button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="openPayBillModal(${item.id})">Pay</button>` : ""}
+                <button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="openBillModal(${item.id})">Edit</button>
+                ${item.status !== "Void" ? `<button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="confirmVoidBill(${item.id})">Void</button>` : ""}
+                <button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="confirmDeleteBill(${item.id})">Delete</button>
+              </div>
+            </td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  ` : `<div class="empty-state"><div class="ic">▤</div><div class="t">No bills match these filters</div></div>`;
+
+  applyRoleGates();
+  renderPagination($("billsPagination"), data.total, data.limit, data.offset, loadBills);
+}
+
+function printBill(id) { window.open(`/api/bills/${id}/print`, "_blank"); }
+
+let billItemSeq = 0;
+
+function billItemRowHtml(item) {
+  item = item || {};
+  const idx = billItemSeq++;
+  return `
+    <div class="item-row" data-idx="${idx}">
+      <input placeholder="Item name" class="bi-name" value="${escapeHtml(item.item_name || "")}" oninput="recalcBillTotals()" />
+      <input placeholder="Qty" type="number" step="0.0001" min="0.0001" class="bi-qty" value="${item.quantity ?? 1}" oninput="recalcBillTotals()" />
+      <input placeholder="Unit price" type="number" step="0.01" min="0" class="bi-price" value="${item.unit_price_cents !== undefined ? (item.unit_price_cents / 100).toFixed(2) : (item.unit_price ?? "")}" oninput="recalcBillTotals()" />
+      <span class="num bi-line-total" style="font-size:12.5px;">0.00</span>
+      <button type="button" class="btn ghost icon-only small" onclick="removeBillItemRow(this)" title="Remove item">✕</button>
+    </div>
+  `;
+}
+
+function addBillItemRow(item) {
+  qs("#billItemsWrap").insertAdjacentHTML("beforeend", billItemRowHtml(item));
+  recalcBillTotals();
+}
+
+function removeBillItemRow(btn) {
+  const rows = qsa("#billItemsWrap .item-row");
+  if (rows.length <= 1) { toast("A bill needs at least one item", "info"); return; }
+  btn.closest(".item-row").remove();
+  recalcBillTotals();
+}
+
+function recalcBillTotals() {
+  const rows = qsa("#billItemsWrap .item-row");
+  let subtotal = 0;
+  rows.forEach((row) => {
+    const qty = parseFloat(qs(".bi-qty", row).value) || 0;
+    const price = parseFloat(qs(".bi-price", row).value) || 0;
+    const lineTotal = qty * price;
+    qs(".bi-line-total", row).textContent = lineTotal.toFixed(2);
+    subtotal += lineTotal;
+  });
+  const discountPct = parseFloat($("billDiscountPct") ? $("billDiscountPct").value : 0) || 0;
+  const taxRate = parseFloat($("billTaxRate") ? $("billTaxRate").value : 0) || 0;
+  const discount = subtotal * (discountPct / 100);
+  const taxable = subtotal - discount;
+  const tax = taxable * (taxRate / 100);
+  const total = taxable + tax;
+
+  if ($("billSubtotalPreview")) $("billSubtotalPreview").textContent = subtotal.toFixed(2);
+  if ($("billDiscountPreview")) $("billDiscountPreview").textContent = discount.toFixed(2);
+  if ($("billTaxPreview")) $("billTaxPreview").textContent = tax.toFixed(2);
+  if ($("billTotalPreview")) $("billTotalPreview").textContent = total.toFixed(2);
+}
+
+function onBillPayeeSelectChange() {
+  const pid = $("billPayeeSelect").value;
+  if (!pid) return;
+  const payee = state.caches.payees.find((p) => String(p.id) === String(pid));
+  if (payee) {
+    $("billPayeeName").value = payee.name;
+    $("billPayeeEmail").value = payee.email || "";
+    $("billPayeeAddress").value = payee.address || "";
+  }
+}
+
+function billFormHtml(bill) {
+  bill = bill || {};
+  const isEdit = !!bill.id;
+  billItemSeq = 0;
+  const items = bill.items && bill.items.length ? bill.items : [{}];
+
+  return `
+    <form id="billForm" onsubmit="saveBill(event, ${bill.id || "null"})">
+      <div class="form-grid">
+        <div class="field"><label>Existing Payee</label><select id="billPayeeSelect" onchange="onBillPayeeSelectChange()">${payeeOptions(bill.payee_id)}</select></div>
+        <div class="field"><label>Payee Name *</label><input id="billPayeeName" required value="${escapeHtml(bill.payee_name || "")}" /></div>
+        <div class="field"><label>Payee Email</label><input id="billPayeeEmail" type="email" value="${escapeHtml(bill.payee_email || "")}" /></div>
+        <div class="field"><label>Category *</label><select id="billCategory">${categoryOptions("bill", bill.bill_category)}</select></div>
+        <div class="field"><label>Bill Date *</label><input id="billDate" type="date" required value="${bill.bill_date || todayIso()}" /></div>
+        <div class="field"><label>Due Date *</label><input id="billDueDate" type="date" required value="${bill.due_date || todayIso()}" /></div>
+        <div class="field"><label>Account</label><select id="billAccount">${accountOptions(bill.account_id)}</select></div>
+        ${!isEdit ? `<div class="field"><label>Initial Status</label>
+          <select id="billInitialStatus" onchange="$('billPaidAmountField').classList.toggle('hidden', this.value !== 'Pending')">
+            <option value="Pending">Pending</option>
+            <option value="Paid">Paid in Full</option>
+            <option value="Void">Void</option>
+          </select></div>` : ""}
+      </div>
+
+      <div class="field full" style="margin-top:14px;"><label>Payee Address</label><textarea id="billPayeeAddress" style="min-height:50px;">${escapeHtml(bill.payee_address || "")}</textarea></div>
+
+      <fieldset style="margin-top:16px;">
+        <legend>Line Items</legend>
+        <div class="item-row" style="font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:2px;">
+          <span>Item</span><span>Qty</span><span>Unit Price</span><span>Line Total</span><span></span>
+        </div>
+        <div id="billItemsWrap">${items.map((it) => billItemRowHtml(it)).join("")}</div>
+        <button type="button" class="btn secondary small" onclick="addBillItemRow()">+ Add Item</button>
+      </fieldset>
+
+      <div class="form-grid" style="margin-top:14px;">
+        <div class="field"><label>Discount %</label><input id="billDiscountPct" type="number" step="0.01" min="0" max="100" value="${bill.discount_pct ?? 0}" oninput="recalcBillTotals()" /></div>
+        <div class="field"><label>Tax Rate %</label><input id="billTaxRate" type="number" step="0.01" min="0" max="100" value="${bill.tax_rate ?? 0}" oninput="recalcBillTotals()" /></div>
+        ${!isEdit ? `<div class="field" id="billPaidAmountField"><label>Initial Payment Received</label><input id="billPaidAmount" type="number" step="0.01" min="0" placeholder="0.00" /></div>` : ""}
+      </div>
+
+      <div class="field full"><label>Notes</label><textarea id="billNotes">${escapeHtml(bill.notes || "")}</textarea></div>
+
+      <div class="card" style="margin-top:16px;background:var(--paper-alt);border:1px dashed var(--line);">
+        <div class="card-pad" style="padding:14px 16px;">
+          <div style="display:flex;justify-content:space-between;font-size:13px;padding:3px 0;"><span class="muted">Subtotal</span><span class="num" id="billSubtotalPreview">0.00</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:13px;padding:3px 0;"><span class="muted">Discount</span><span class="num" id="billDiscountPreview">0.00</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:13px;padding:3px 0;"><span class="muted">Tax</span><span class="num" id="billTaxPreview">0.00</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:14.5px;padding:6px 0 0;border-top:1px solid var(--line);margin-top:4px;font-weight:700;"><span>Total</span><span class="num" id="billTotalPreview">0.00</span></div>
+        </div>
+      </div>
+    </form>
+  `;
+}
+
+function openBillModal(id) {
+  const launch = (bill) => {
+    openModal({
+      title: id ? `Edit Bill ${bill.bill_number || ""}` : "New Bill",
+      wide: true,
+      bodyHtml: billFormHtml(bill),
+      footHtml: `
+        <button class="btn secondary" onclick="closeModal()">Cancel</button>
+        <button class="btn" onclick="document.getElementById('billForm').requestSubmit()">${id ? "Save Changes" : "Create Bill"}</button>
+      `,
+    });
+    recalcBillTotals();
+  };
+  if (id) {
+    api(`/api/bills/${id}`).then(launch).catch((err) => toast(err.message, "error"));
+  } else {
+    launch({});
+  }
+}
+
+function collectBillItems() {
+  return qsa("#billItemsWrap .item-row").map((row) => ({
+    item_name: qs(".bi-name", row).value,
+    quantity: qs(".bi-qty", row).value || 1,
+    unit_price: qs(".bi-price", row).value || 0,
+  }));
+}
+
+async function saveBill(event, id) {
+  event.preventDefault();
+  const payload = {
+    payee_id: $("billPayeeSelect").value || null,
+    payee_name: $("billPayeeName").value,
+    payee_email: $("billPayeeEmail").value,
+    payee_address: $("billPayeeAddress").value,
+    bill_category: $("billCategory").value,
+    bill_date: $("billDate").value,
+    due_date: $("billDueDate").value,
+    account_id: $("billAccount").value || null,
+    discount_pct: $("billDiscountPct").value || 0,
+    tax_rate: $("billTaxRate").value || 0,
+    notes: $("billNotes").value,
+    items: collectBillItems(),
+  };
+  if (!id) {
+    payload.status = $("billInitialStatus").value;
+    if (payload.status === "Pending" && $("billPaidAmount").value) {
+      payload.paid_amount = $("billPaidAmount").value;
     }
+  }
+  try {
+    if (id) await api(`/api/bills/${id}`, "PUT", payload);
+    else await api("/api/bills", "POST", payload);
+    closeModal();
+    toast(id ? "Bill updated" : "Bill created", "success");
+    loadBills();
+    if (currentTab === "dashboard") loadDashboard();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
 
-    async function loadExpenses() {
-      const data = await api("/api/expenses?limit=50");
+function openPayBillModal(id) {
+  api(`/api/bills/${id}`).then((bill) => {
+    const balance = bill.balance;
+    openModal({
+      title: `Record Payment — ${bill.bill_number}`,
+      bodyHtml: `
+        <form id="payBillForm" onsubmit="submitBillPayment(event, ${id})">
+          <p class="muted" style="margin-top:0;font-size:13px;">Balance due: <strong class="num">${fmtMoney(balance, { plain: true })}</strong></p>
+          <div class="form-grid">
+            <div class="field"><label>Amount *</label><input id="payAmount" type="number" step="0.01" min="0.01" max="${balance}" required value="${balance}" /></div>
+            <div class="field"><label>Payment Date *</label><input id="payDate" type="date" required value="${todayIso()}" /></div>
+            <div class="field full"><label>Account</label><select id="payAccount">${accountOptions(bill.account_id)}</select></div>
+            <div class="field full"><label>Notes</label><textarea id="payNotes"></textarea></div>
+          </div>
+        </form>
+      `,
+      footHtml: `
+        <button class="btn secondary" onclick="closeModal()">Cancel</button>
+        <button class="btn" onclick="document.getElementById('payBillForm').requestSubmit()">Record Payment</button>
+      `,
+    });
+  }).catch((err) => toast(err.message, "error"));
+}
 
-      $("expensesTable").innerHTML = data.items.length
-        ? `
-          <table>
-            <thead>
-              <tr>
-                <th>Title</th>
-                <th>Category</th>
-                <th>Date</th>
-                <th>Member</th>
-                <th class="right">Amount</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${data.items.map((item) => `
-                <tr>
-                  <td>${escapeHtml(item.title)}</td>
-                  <td>${escapeHtml(item.category)}</td>
-                  <td>${escapeHtml(item.expense_date)}</td>
-                  <td>${escapeHtml(item.member || "")}</td>
-                  <td class="right">${escapeHtml(item.amount)}</td>
-                </tr>
-              `).join("")}
-            </tbody>
-          </table>
-        `
-        : `<p class="muted">No expenses found.</p>`;
+async function submitBillPayment(event, id) {
+  event.preventDefault();
+  try {
+    await api(`/api/bills/${id}/pay`, "POST", {
+      amount: $("payAmount").value,
+      payment_date: $("payDate").value,
+      account_id: $("payAccount").value || null,
+      notes: $("payNotes").value,
+    });
+    closeModal();
+    toast("Payment recorded", "success");
+    loadBills();
+    if (currentTab === "dashboard") loadDashboard();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+function confirmVoidBill(id) {
+  confirmModal("Void this bill? Voided bills are excluded from totals and can't be paid.", async () => {
+    await apiAction(() => api(`/api/bills/${id}/void`, "POST"), "Bill voided");
+    loadBills();
+  });
+}
+
+function confirmDeleteBill(id) {
+  confirmModal("Delete this bill? This can't be undone.", async () => {
+    await apiAction(() => api(`/api/bills/${id}`, "DELETE"), "Bill deleted");
+    loadBills();
+  });
+}
+
+
+/* =========================================================================
+   BUDGETS
+   ========================================================================= */
+
+async function loadBudgets() {
+  const period = $("budgetsPeriodFilter").value;
+  $("budgetsMonth").classList.toggle("hidden", period !== "monthly");
+  if (!$("budgetsMonth").value) $("budgetsMonth").value = todayIso().slice(0, 7);
+
+  let budgets, report;
+  try {
+    const params = new URLSearchParams({ period });
+    budgets = await api(`/api/budgets?${params.toString()}`);
+    const reportParams = new URLSearchParams({ period });
+    if (period === "monthly") reportParams.set("month", $("budgetsMonth").value);
+    else reportParams.set("year", todayIso().slice(0, 4));
+    report = await api(`/api/reports/budget?${reportParams.toString()}`);
+  } catch (err) { toast(err.message, "error"); return; }
+
+  const actualsById = {};
+  report.items.forEach((r) => { actualsById[r.id] = r; });
+
+  if (!budgets.length) {
+    $("budgetsList").innerHTML = `<div class="empty-state"><div class="ic">▦</div><div class="t">No ${period} budgets yet</div><button class="btn small" onclick="openBudgetModal()">Set your first budget →</button></div>`;
+    return;
+  }
+
+  $("budgetsList").innerHTML = `<div class="grid cols-2">` + budgets.map((b) => {
+    const actual = actualsById[b.id] || { actual: 0, remaining: b.amount, used_pct: 0 };
+    const usedPct = Math.min(100, actual.used_pct || 0);
+    const over = actual.used_pct > 100;
+    return `
+      <div class="card card-pad">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+          <div>
+            <strong>${escapeHtml(b.category)}</strong>
+            ${b.member ? `<div class="field-hint">${escapeHtml(b.member)}</div>` : ""}
+          </div>
+          <div class="row-actions">
+            <button class="btn ghost small role-gate" data-role="Admin,Editor" onclick='openBudgetModal(${b.id})'>Edit</button>
+            <button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="confirmDeleteBudget(${b.id})">Delete</button>
+          </div>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:13px;margin:12px 0 6px;">
+          <span class="muted num">${fmtMoney(actual.actual, { plain: true })} of ${fmtMoney(b.amount, { plain: true })}</span>
+          <span class="${over ? 'amt-neg' : 'amt-pos'} num">${fmtMoney(actual.remaining, { plain: true })} left</span>
+        </div>
+        <div class="progress-track"><div class="progress-fill ${over ? 'over' : usedPct >= 80 ? 'warn' : ''}" style="width:${usedPct}%;"></div></div>
+      </div>
+    `;
+  }).join("") + `</div>`;
+
+  applyRoleGates();
+}
+
+function budgetFormHtml(item) {
+  item = item || {};
+  return `
+    <form id="budgetForm" class="form-grid" onsubmit="saveBudget(event, ${item.id || "null"})">
+      <div class="field"><label>Category *</label><select id="budCategory">${categoryOptions("expense", item.category)}</select></div>
+      <div class="field"><label>Period *</label>
+        <select id="budPeriod"><option value="monthly" ${item.period !== "yearly" ? "selected" : ""}>Monthly</option><option value="yearly" ${item.period === "yearly" ? "selected" : ""}>Yearly</option></select>
+      </div>
+      <div class="field"><label>Amount *</label><input id="budAmount" type="number" step="0.01" min="0.01" required value="${item.amount ?? ""}" /></div>
+      <div class="field"><label>Member</label><select id="budMember">${memberOptions(item.member)}</select></div>
+      <div class="field full"><label>Notes</label><textarea id="budNotes">${escapeHtml(item.notes || "")}</textarea></div>
+    </form>
+  `;
+}
+
+function openBudgetModal(id) {
+  const launch = (item) => {
+    openModal({
+      title: id ? "Edit Budget" : "Add Budget",
+      bodyHtml: budgetFormHtml(item),
+      footHtml: `<button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn" onclick="document.getElementById('budgetForm').requestSubmit()">${id ? "Save Changes" : "Add Budget"}</button>`,
+    });
+  };
+  if (id) {
+    api(`/api/budgets?period=${$("budgetsPeriodFilter").value}`).then((list) => {
+      const found = list.find((b) => b.id === id);
+      launch(found || {});
+    }).catch((err) => toast(err.message, "error"));
+  } else {
+    launch({});
+  }
+}
+
+async function saveBudget(event, id) {
+  event.preventDefault();
+  const payload = {
+    category: $("budCategory").value,
+    period: $("budPeriod").value,
+    amount: $("budAmount").value,
+    member: $("budMember").value,
+    notes: $("budNotes").value,
+  };
+  try {
+    if (id) await api(`/api/budgets/${id}`, "PUT", payload);
+    else await api("/api/budgets", "POST", payload);
+    closeModal();
+    toast(id ? "Budget updated" : "Budget added", "success");
+    loadBudgets();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+function confirmDeleteBudget(id) {
+  confirmModal("Delete this budget?", async () => {
+    await apiAction(() => api(`/api/budgets/${id}`, "DELETE"), "Budget deleted");
+    loadBudgets();
+  });
+}
+
+/* =========================================================================
+   GOALS
+   ========================================================================= */
+
+async function loadGoals() {
+  let goals;
+  try {
+    goals = await api("/api/goals");
+  } catch (err) { toast(err.message, "error"); return; }
+
+  if (!goals.length) {
+    $("goalsList").innerHTML = `<div class="empty-state"><div class="ic">◎</div><div class="t">No savings goals yet</div><button class="btn small" onclick="openGoalModal()">Create your first goal →</button></div>`;
+    return;
+  }
+
+  $("goalsList").innerHTML = `<div class="grid cols-3">` + goals.map((g) => `
+    <div class="card card-pad">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+        <strong>${escapeHtml(g.name)}</strong>
+        <div class="row-actions">
+          <button class="btn ghost small role-gate" data-role="Admin,Editor" onclick='openGoalModal(${g.id})'>Edit</button>
+          <button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="confirmDeleteGoal(${g.id})">Delete</button>
+        </div>
+      </div>
+      ${g.target_date ? `<div class="field-hint">Target date: ${fmtDate(g.target_date)}</div>` : ""}
+      <div style="margin:14px 0 6px;font-size:13px;" class="muted num">${fmtMoney(g.current, { plain: true })} of ${fmtMoney(g.target, { plain: true })}</div>
+      <div class="progress-track"><div class="progress-fill" style="width:${Math.min(100, g.progress_pct)}%;"></div></div>
+      <div class="field-hint" style="margin-top:6px;">${g.progress_pct}% funded</div>
+      <button class="btn secondary small role-gate" data-role="Admin,Editor" style="margin-top:12px;" onclick="openContributeModal(${g.id}, '${escapeHtml(g.name).replace(/'/g, "\\'")}')">+ Contribute</button>
+    </div>
+  `).join("") + `</div>`;
+
+  applyRoleGates();
+}
+
+function goalFormHtml(item) {
+  item = item || {};
+  return `
+    <form id="goalForm" class="form-grid" onsubmit="saveGoal(event, ${item.id || "null"})">
+      <div class="field full"><label>Goal Name *</label><input id="goalName" required value="${escapeHtml(item.name || "")}" /></div>
+      <div class="field"><label>Target Amount *</label><input id="goalTarget" type="number" step="0.01" min="0.01" required value="${item.target ?? ""}" /></div>
+      <div class="field"><label>Current Amount</label><input id="goalCurrent" type="number" step="0.01" min="0" value="${item.current ?? 0}" /></div>
+      <div class="field full"><label>Target Date</label><input id="goalTargetDate" type="date" value="${item.target_date || ""}" /></div>
+      <div class="field full"><label>Notes</label><textarea id="goalNotes">${escapeHtml(item.notes || "")}</textarea></div>
+    </form>
+  `;
+}
+
+function openGoalModal(id) {
+  const launch = (item) => {
+    openModal({
+      title: id ? "Edit Goal" : "Add Goal",
+      bodyHtml: goalFormHtml(item),
+      footHtml: `<button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn" onclick="document.getElementById('goalForm').requestSubmit()">${id ? "Save Changes" : "Add Goal"}</button>`,
+    });
+  };
+  if (id) {
+    api("/api/goals").then((list) => launch(list.find((g) => g.id === id) || {})).catch((err) => toast(err.message, "error"));
+  } else {
+    launch({});
+  }
+}
+
+async function saveGoal(event, id) {
+  event.preventDefault();
+  const payload = {
+    name: $("goalName").value,
+    target: $("goalTarget").value,
+    current: $("goalCurrent").value || 0,
+    target_date: $("goalTargetDate").value || null,
+    notes: $("goalNotes").value,
+  };
+  try {
+    if (id) await api(`/api/goals/${id}`, "PUT", payload);
+    else await api("/api/goals", "POST", payload);
+    closeModal();
+    toast(id ? "Goal updated" : "Goal added", "success");
+    loadGoals();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+function openContributeModal(id, name) {
+  openModal({
+    title: `Contribute to "${name}"`,
+    bodyHtml: `
+      <form id="contributeForm" onsubmit="submitContribute(event, ${id})">
+        <div class="field"><label>Amount *</label><input id="contribAmount" type="number" step="0.01" min="0.01" required autofocus /></div>
+      </form>
+    `,
+    footHtml: `<button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn" onclick="document.getElementById('contributeForm').requestSubmit()">Add Contribution</button>`,
+  });
+}
+
+async function submitContribute(event, id) {
+  event.preventDefault();
+  try {
+    await api(`/api/goals/${id}/contribute`, "POST", { amount: $("contribAmount").value });
+    closeModal();
+    toast("Contribution added", "success");
+    loadGoals();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+function confirmDeleteGoal(id) {
+  confirmModal("Delete this goal?", async () => {
+    await apiAction(() => api(`/api/goals/${id}`, "DELETE"), "Goal deleted");
+    loadGoals();
+  });
+}
+
+
+/* =========================================================================
+   RECURRING RULES
+   ========================================================================= */
+
+async function loadRecurring() {
+  let items;
+  try {
+    items = await api("/api/recurring");
+  } catch (err) { toast(err.message, "error"); return; }
+
+  $("recurringTable").innerHTML = items.length ? `
+    <table>
+      <thead><tr>
+        <th>Name</th><th>Type</th><th>Frequency</th><th>Next Run</th><th>Last Run</th><th>Status</th><th></th>
+      </tr></thead>
+      <tbody>
+        ${items.map((r) => `
+          <tr>
+            <td>${escapeHtml(r.name)}</td>
+            <td style="text-transform:capitalize;">${escapeHtml(r.entity_type)}</td>
+            <td>every ${r.interval_value} ${escapeHtml(r.frequency)}${r.interval_value > 1 ? "s" : ""}</td>
+            <td>${fmtDate(r.next_run_date)}</td>
+            <td>${r.last_run_date ? fmtDate(r.last_run_date) : "—"}</td>
+            <td>${r.is_active ? `<span class="pill success">Active</span>` : `<span class="pill">Paused</span>`}</td>
+            <td>
+              <div class="row-actions">
+                <button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="openRecurringModal(${r.id})">Edit</button>
+                <button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="confirmDeleteRecurring(${r.id})">Delete</button>
+              </div>
+            </td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  ` : `<div class="empty-state"><div class="ic">↻</div><div class="t">No recurring rules yet</div><button class="btn small" onclick="openRecurringModal()">Automate your first bill →</button></div>`;
+
+  applyRoleGates();
+}
+
+function recurringPayloadFields(entityType, p) {
+  p = p || {};
+  if (entityType === "expense") {
+    return `
+      <div class="field"><label>Title *</label><input id="rpTitle" required value="${escapeHtml(p.title || "")}" /></div>
+      <div class="field"><label>Amount *</label><input id="rpAmount" type="number" step="0.01" min="0.01" required value="${p.amount ?? ""}" /></div>
+      <div class="field"><label>Category</label><select id="rpCategory">${categoryOptions("expense", p.category)}</select></div>
+      <div class="field"><label>Store</label><input id="rpStore" value="${escapeHtml(p.store || "")}" /></div>
+      <div class="field"><label>Member</label><select id="rpMember">${memberOptions(p.member)}</select></div>
+      <div class="field"><label>Account</label><select id="rpAccount">${accountOptions(p.account_id)}</select></div>
+    `;
+  }
+  if (entityType === "income") {
+    return `
+      <div class="field"><label>Title *</label><input id="rpTitle" required value="${escapeHtml(p.title || "")}" /></div>
+      <div class="field"><label>Amount *</label><input id="rpAmount" type="number" step="0.01" min="0.01" required value="${p.amount ?? ""}" /></div>
+      <div class="field"><label>Category</label><select id="rpCategory">${categoryOptions("income", p.category)}</select></div>
+      <div class="field"><label>Source</label><input id="rpSource" value="${escapeHtml(p.source || "")}" /></div>
+      <div class="field"><label>Member</label><select id="rpMember">${memberOptions(p.member)}</select></div>
+      <div class="field"><label>Account</label><select id="rpAccount">${accountOptions(p.account_id)}</select></div>
+    `;
+  }
+  // bill
+  const item = (p.items && p.items[0]) || {};
+  return `
+    <div class="field"><label>Payee Name *</label><input id="rpPayeeName" required value="${escapeHtml(p.payee_name || "")}" /></div>
+    <div class="field"><label>Category</label><select id="rpCategory">${categoryOptions("bill", p.bill_category)}</select></div>
+    <div class="field"><label>Item Name *</label><input id="rpItemName" required value="${escapeHtml(item.item_name || "Recurring charge")}" /></div>
+    <div class="field"><label>Amount *</label><input id="rpAmount" type="number" step="0.01" min="0.01" required value="${item.unit_price ?? ""}" /></div>
+    <div class="field"><label>Tax Rate %</label><input id="rpTaxRate" type="number" step="0.01" min="0" value="${p.tax_rate ?? 0}" /></div>
+    <div class="field"><label>Account</label><select id="rpAccount">${accountOptions(p.account_id)}</select></div>
+  `;
+}
+
+function refreshRecurringPayloadFields(payload) {
+  const type = $("recEntityType").value;
+  $("recurringPayloadWrap").innerHTML = recurringPayloadFields(type, payload || {});
+}
+
+function recurringFormHtml(rule) {
+  rule = rule || {};
+  return `
+    <form id="recurringForm" onsubmit="saveRecurring(event, ${rule.id || "null"})">
+      <div class="form-grid">
+        <div class="field full"><label>Rule Name *</label><input id="recName" required value="${escapeHtml(rule.name || "")}" /></div>
+        <div class="field"><label>Applies To *</label>
+          <select id="recEntityType" onchange="refreshRecurringPayloadFields()">
+            <option value="expense" ${rule.entity_type === "expense" ? "selected" : ""}>Expense</option>
+            <option value="income" ${rule.entity_type === "income" ? "selected" : ""}>Income</option>
+            <option value="bill" ${rule.entity_type === "bill" ? "selected" : ""}>Bill</option>
+          </select>
+        </div>
+        <div class="field"><label>Frequency *</label>
+          <select id="recFrequency">
+            <option value="daily" ${rule.frequency === "daily" ? "selected" : ""}>Daily</option>
+            <option value="weekly" ${rule.frequency === "weekly" ? "selected" : ""}>Weekly</option>
+            <option value="monthly" ${!rule.frequency || rule.frequency === "monthly" ? "selected" : ""}>Monthly</option>
+            <option value="yearly" ${rule.frequency === "yearly" ? "selected" : ""}>Yearly</option>
+          </select>
+        </div>
+        <div class="field"><label>Every N periods *</label><input id="recInterval" type="number" min="1" value="${rule.interval_value ?? 1}" /></div>
+        <div class="field"><label>Next Run Date *</label><input id="recNextRun" type="date" required value="${rule.next_run_date || todayIso()}" /></div>
+      </div>
+
+      <fieldset style="margin-top:16px;">
+        <legend id="recPayloadLegend">Details</legend>
+        <div class="form-grid" id="recurringPayloadWrap">${recurringPayloadFields(rule.entity_type || "expense", rule.payload)}</div>
+      </fieldset>
+    </form>
+  `;
+}
+
+function openRecurringModal(id) {
+  const launch = (rule) => {
+    openModal({
+      title: id ? "Edit Recurring Rule" : "Add Recurring Rule",
+      wide: true,
+      bodyHtml: recurringFormHtml(rule),
+      footHtml: `<button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn" onclick="document.getElementById('recurringForm').requestSubmit()">${id ? "Save Changes" : "Add Rule"}</button>`,
+    });
+  };
+  if (id) {
+    api("/api/recurring").then((list) => launch(list.find((r) => r.id === id) || {})).catch((err) => toast(err.message, "error"));
+  } else {
+    launch({});
+  }
+}
+
+function collectRecurringPayload(entityType) {
+  if (entityType === "expense") {
+    return {
+      title: $("rpTitle").value, amount: $("rpAmount").value, category: $("rpCategory").value,
+      store: $("rpStore").value, member: $("rpMember").value, account_id: $("rpAccount").value || null,
+    };
+  }
+  if (entityType === "income") {
+    return {
+      title: $("rpTitle").value, amount: $("rpAmount").value, category: $("rpCategory").value,
+      source: $("rpSource").value, member: $("rpMember").value, account_id: $("rpAccount").value || null,
+    };
+  }
+  return {
+    payee_name: $("rpPayeeName").value, bill_category: $("rpCategory").value,
+    tax_rate: $("rpTaxRate").value || 0, account_id: $("rpAccount").value || null,
+    items: [{ item_name: $("rpItemName").value, quantity: 1, unit_price: $("rpAmount").value }],
+  };
+}
+
+async function saveRecurring(event, id) {
+  event.preventDefault();
+  const entityType = $("recEntityType").value;
+  const payload = {
+    name: $("recName").value,
+    entity_type: entityType,
+    frequency: $("recFrequency").value,
+    interval_value: $("recInterval").value,
+    next_run_date: $("recNextRun").value,
+    payload: collectRecurringPayload(entityType),
+  };
+  try {
+    if (id) await api(`/api/recurring/${id}`, "PUT", payload);
+    else await api("/api/recurring", "POST", payload);
+    closeModal();
+    toast(id ? "Rule updated" : "Rule added", "success");
+    loadRecurring();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+function confirmDeleteRecurring(id) {
+  confirmModal("Delete this recurring rule?", async () => {
+    await apiAction(() => api(`/api/recurring/${id}`, "DELETE"), "Rule deleted");
+    loadRecurring();
+  });
+}
+
+async function runRecurringNow() {
+  try {
+    const result = await api("/api/recurring/run", "POST", {});
+    toast(result.created.length ? `Created ${result.created.length} item(s)` : "No rules were due", "success");
+    loadRecurring();
+    if (currentTab === "dashboard") loadDashboard();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+
+/* =========================================================================
+   REPORTS
+   ========================================================================= */
+
+function initReportsTab() {
+  showReportTab("overview");
+}
+
+function showReportTab(name) {
+  qsa("#reportsTabs .tab-inline-btn").forEach((b) => b.classList.toggle("active", b.dataset.report === name));
+  qsa(".report-pane").forEach((p) => p.classList.add("hidden"));
+  $(`report-${name}`).classList.remove("hidden");
+
+  const loaders = {
+    overview: loadReportsOverview,
+    budget: loadReportBudget,
+    cashflow: loadReportCashflow,
+    networth: loadReportNetWorth,
+    subscriptions: loadReportSubscriptions,
+    payees: loadReportPayees,
+  };
+  if (loaders[name]) loaders[name]();
+}
+
+async function loadReportsOverview() {
+  const yearSelect = $("reportsYearFilter");
+  const year = yearSelect.value || todayIso().slice(0, 4);
+
+  let data;
+  try {
+    data = await api(`/api/reports?year=${year}`);
+  } catch (err) { toast(err.message, "error"); return; }
+
+  if (yearSelect.options.length === 0) {
+    yearSelect.innerHTML = data.available_years.map((y) => `<option value="${y}" ${y === year ? "selected" : ""}>${y}</option>`).join("");
+  }
+
+  const cfData = data.monthly.map((m) => ({
+    label: m.month,
+    values: [
+      { key: "Income", value: m.income, color: CHART_PALETTE[0] },
+      { key: "Expenses", value: m.expenses, color: CHART_PALETTE[3] },
+    ],
+  }));
+
+  const expenseCatData = data.expense_cats.map((c, i) => ({ label: c.category, value: c.total, color: CHART_PALETTE[i % CHART_PALETTE.length] }));
+  const incomeCatData = data.income_cats.map((c, i) => ({ label: c.category, value: c.total, color: CHART_PALETTE[i % CHART_PALETTE.length] }));
+
+  $("report-overview").innerHTML = `
+    <div class="grid cols-4">
+      <div class="card stat-card"><div class="label">Total Income</div><div class="value amt-pos">${fmtMoney(data.total_income, { plain: true })}</div></div>
+      <div class="card stat-card"><div class="label">Total Expenses</div><div class="value amt-neg">${fmtMoney(data.total_expenses, { plain: true })}</div></div>
+      <div class="card stat-card"><div class="label">Net Savings</div><div class="value ${data.net_savings >= 0 ? 'amt-pos' : 'amt-neg'}">${fmtMoney(data.net_savings, { plain: true })}</div></div>
+      <div class="card stat-card"><div class="label">Savings Rate</div><div class="value">${data.savings_rate}%</div></div>
+    </div>
+
+    <div class="card section">
+      <div class="card-head"><h3>Income vs. Expenses — ${year}</h3></div>
+      <div class="card-pad">${groupedBarChart(cfData, { height: 240 })}${chartLegend([{ label: "Income", color: CHART_PALETTE[0] }, { label: "Expenses", color: CHART_PALETTE[3] }])}</div>
+    </div>
+
+    <div class="grid cols-2 section">
+      <div class="card">
+        <div class="card-head"><h3>Expense Categories</h3></div>
+        <div class="card-pad">${reportCatBreakdown(expenseCatData)}</div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>Income Categories</h3></div>
+        <div class="card-pad">${reportCatBreakdown(incomeCatData)}</div>
+      </div>
+    </div>
+
+    <div class="card section">
+      <div class="card-head"><h3>Bill Status Breakdown</h3></div>
+      <div class="table-wrap">
+        ${data.status_breakdown.length ? `
+          <table><thead><tr><th>Status</th><th class="right">Count</th><th class="right">Total</th></tr></thead>
+          <tbody>${data.status_breakdown.map((s) => `<tr><td>${billStatusPill(s.status)}</td><td class="right num">${s.count}</td><td class="right">${fmtMoney(s.total, { neutral: true })}</td></tr>`).join("")}</tbody></table>
+        ` : `<div class="empty-state">No bills yet</div>`}
+      </div>
+    </div>
+  `;
+}
+
+function reportCatBreakdown(catData) {
+  if (!catData.length) return `<div class="empty-state" style="padding:20px;">No data yet</div>`;
+  return `
+    <div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap;">
+      ${donutChart(catData, { size: 150 })}
+      <div style="flex:1;min-width:180px;">
+        ${catData.map((c) => `
+          <div style="display:flex;justify-content:space-between;align-items:center;font-size:12.5px;padding:4px 0;">
+            <span style="display:flex;align-items:center;gap:6px;"><span style="width:9px;height:9px;border-radius:2px;background:${c.color};display:inline-block;"></span>${escapeHtml(c.label)}</span>
+            <span class="num">${fmtMoney(c.value, { plain: true })}</span>
+          </div>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+async function loadReportBudget() {
+  const year = $("reportsYearFilter").value || todayIso().slice(0, 4);
+  let monthly, yearly;
+  try {
+    monthly = await api(`/api/reports/budget?period=monthly&month=${todayIso().slice(0, 7)}`);
+    yearly = await api(`/api/reports/budget?period=yearly&year=${year}`);
+  } catch (err) { toast(err.message, "error"); return; }
+
+  const renderList = (items) => items.length ? items.map((b) => {
+    const usedPct = Math.min(100, b.used_pct);
+    const over = b.used_pct > 100;
+    return `
+      <div style="margin-bottom:14px;">
+        <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:5px;">
+          <strong>${escapeHtml(b.category)}${b.member ? ` · ${escapeHtml(b.member)}` : ""}</strong>
+          <span class="muted num">${fmtMoney(b.actual, { plain: true })} / ${fmtMoney(b.budget, { plain: true })}</span>
+        </div>
+        <div class="progress-track"><div class="progress-fill ${over ? 'over' : usedPct >= 80 ? 'warn' : ''}" style="width:${usedPct}%;"></div></div>
+      </div>
+    ` ;
+  }).join("") : `<div class="empty-state" style="padding:20px;">No budgets set for this period</div>`;
+
+  $("report-budget").innerHTML = `
+    <div class="grid cols-2">
+      <div class="card">
+        <div class="card-head"><h3>This Month</h3></div>
+        <div class="card-pad">${renderList(monthly.items)}</div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>This Year (${year})</h3></div>
+        <div class="card-pad">${renderList(yearly.items)}</div>
+      </div>
+    </div>
+  `;
+}
+
+async function loadReportCashflow() {
+  let data;
+  try {
+    data = await api("/api/reports/cash-flow?months=12");
+  } catch (err) { toast(err.message, "error"); return; }
+
+  const cfData = data.map((m) => ({
+    label: m.month.slice(5),
+    values: [
+      { key: "Income", value: m.income, color: CHART_PALETTE[0] },
+      { key: "Outflow", value: m.outflow, color: CHART_PALETTE[3] },
+    ],
+  }));
+
+  $("report-cashflow").innerHTML = `
+    <div class="card">
+      <div class="card-head"><h3>12-Month Cash Flow</h3></div>
+      <div class="card-pad">${groupedBarChart(cfData, { height: 260, width: 900 })}${chartLegend([{ label: "Income", color: CHART_PALETTE[0] }, { label: "Outflow", color: CHART_PALETTE[3] }])}</div>
+    </div>
+    <div class="card section">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Month</th><th class="right">Income</th><th class="right">Expenses</th><th class="right">Bill Payments</th><th class="right">Savings</th><th class="right">Rate</th></tr></thead>
+          <tbody>
+            ${data.map((m) => `<tr>
+              <td>${escapeHtml(m.month)}</td>
+              <td class="right">${fmtMoney(m.income, { neutral: true })}</td>
+              <td class="right">${fmtMoney(m.expenses, { neutral: true })}</td>
+              <td class="right">${fmtMoney(m.bill_payments, { neutral: true })}</td>
+              <td class="right">${fmtMoney(m.savings)}</td>
+              <td class="right num">${m.savings_rate}%</td>
+            </tr>`).join("")}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+async function loadReportNetWorth() {
+  let data;
+  try {
+    data = await api("/api/reports/net-worth");
+  } catch (err) { toast(err.message, "error"); return; }
+
+  $("report-networth").innerHTML = `
+    <div class="card stat-card" style="max-width:280px;">
+      <div class="label">Total Net Worth</div>
+      <div class="value ${data.net_worth >= 0 ? 'amt-pos' : 'amt-neg'}">${fmtMoney(data.net_worth, { plain: true })}</div>
+    </div>
+    <div class="card section">
+      <div class="card-head"><h3>By Account</h3></div>
+      <div class="table-wrap">
+        ${data.accounts.length ? `
+          <table><thead><tr><th>Account</th><th>Type</th><th class="right">Balance</th><th class="right">Net Worth Contribution</th></tr></thead>
+          <tbody>${data.accounts.map((a) => `<tr>
+            <td>${escapeHtml(a.name)}</td>
+            <td>${escapeHtml(a.account_type)}</td>
+            <td class="right">${fmtMoney(a.balance)}</td>
+            <td class="right">${fmtMoney(a.net_worth)}</td>
+          </tr>`).join("")}</tbody></table>
+        ` : `<div class="empty-state">No accounts yet</div>`}
+      </div>
+    </div>
+  `;
+}
+
+async function loadReportSubscriptions() {
+  let items;
+  try {
+    items = await api("/api/reports/subscriptions");
+  } catch (err) { toast(err.message, "error"); return; }
+
+  $("report-subscriptions").innerHTML = `
+    <div class="card">
+      <div class="card-head"><div><h3>Recurring Bills & Subscriptions</h3><div class="sub">Detected from Subscription, Internet, and Phone categories</div></div></div>
+      <div class="table-wrap">
+        ${items.length ? `
+          <table><thead><tr><th>Payee</th><th>Category</th><th class="right">Bills</th><th class="right">Total Billed</th><th>Latest Due</th></tr></thead>
+          <tbody>${items.map((it) => `<tr>
+            <td>${escapeHtml(it.payee_name)}</td>
+            <td>${escapeHtml(it.bill_category)}</td>
+            <td class="right num">${it.bill_count}</td>
+            <td class="right">${fmtMoney(it.total, { neutral: true })}</td>
+            <td>${fmtDate(it.latest_due_date)}</td>
+          </tr>`).join("")}</tbody></table>
+        ` : `<div class="empty-state">No recurring-style bills detected yet</div>`}
+      </div>
+    </div>
+  `;
+}
+
+async function loadReportPayees() {
+  const year = $("reportsYearFilter").value || todayIso().slice(0, 4);
+  let items;
+  try {
+    items = await api(`/api/reports/payees?year=${year}`);
+  } catch (err) { toast(err.message, "error"); return; }
+
+  $("report-payees").innerHTML = `
+    <div class="card">
+      <div class="card-head"><h3>Payments by Payee — ${year}</h3></div>
+      <div class="table-wrap">
+        ${items.length ? `
+          <table><thead><tr><th>Payee</th><th>Category</th><th class="right">Bills</th><th class="right">Paid</th></tr></thead>
+          <tbody>${items.map((it) => `<tr>
+            <td>${escapeHtml(it.payee)}</td>
+            <td>${escapeHtml(it.category)}</td>
+            <td class="right num">${it.bill_count}</td>
+            <td class="right">${fmtMoney(it.paid, { neutral: true })}</td>
+          </tr>`).join("")}</tbody></table>
+        ` : `<div class="empty-state">No payments recorded for this year</div>`}
+      </div>
+    </div>
+  `;
+}
+
+
+/* =========================================================================
+   ACCOUNTS
+   ========================================================================= */
+
+async function loadAccounts() {
+  let items;
+  try {
+    items = await api("/api/accounts");
+  } catch (err) { toast(err.message, "error"); return; }
+  state.caches.accounts = items;
+
+  if (!items.length) {
+    $("accountsList").innerHTML = `<div class="empty-state"><div class="ic">▣</div><div class="t">No accounts yet</div><button class="btn small" onclick="openAccountModal()">Add your first account →</button></div>`;
+    return;
+  }
+
+  const netWorth = items.reduce((s, a) => s + a.net_worth, 0);
+
+  $("accountsList").innerHTML = `
+    <div class="card stat-card" style="max-width:280px;margin-bottom:16px;">
+      <div class="label">Net Worth</div>
+      <div class="value ${netWorth >= 0 ? 'amt-pos' : 'amt-neg'}">${fmtMoney(netWorth, { plain: true })}</div>
+    </div>
+    <div class="grid cols-3">
+      ${items.map((a) => `
+        <div class="card card-pad">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+            <div><strong>${escapeHtml(a.name)}</strong><div class="field-hint" style="text-transform:capitalize;">${escapeHtml(a.account_type)}</div></div>
+            <div class="row-actions">
+              <button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="openAccountModal(${a.id})">Edit</button>
+              <button class="btn ghost small role-gate" data-role="Admin" onclick="confirmDeleteAccount(${a.id})">Delete</button>
+            </div>
+          </div>
+          <div class="value num" style="font-size:20px;margin-top:14px;">${fmtMoney(a.balance, { neutral: true })}</div>
+          ${a.notes ? `<div class="field-hint" style="margin-top:6px;">${escapeHtml(a.notes)}</div>` : ""}
+        </div>
+      `).join("")}
+    </div>
+  `;
+
+  applyRoleGates();
+}
+
+function accountFormHtml(item) {
+  item = item || {};
+  return `
+    <form id="accountForm" class="form-grid" onsubmit="saveAccount(event, ${item.id || "null"})">
+      <div class="field"><label>Account Name *</label><input id="accName" required value="${escapeHtml(item.name || "")}" /></div>
+      <div class="field"><label>Type *</label>
+        <select id="accType">
+          ${["Checking", "Savings", "Cash", "Investment", "Credit Card", "Loan", "Other"].map((t) => `<option value="${t}" ${(item.account_type || "Checking") === t ? "selected" : ""}>${t}</option>`).join("")}
+        </select>
+      </div>
+      <div class="field full"><label>${item.id ? "Opening Balance (read-only reference)" : "Opening Balance"} *</label><input id="accOpening" type="number" step="0.01" ${item.id ? "" : "required"} value="${item.opening_balance ?? 0}" /></div>
+      <div class="field full"><label>Notes</label><textarea id="accNotes">${escapeHtml(item.notes || "")}</textarea></div>
+    </form>
+  `;
+}
+
+function openAccountModal(id) {
+  const launch = (item) => {
+    openModal({
+      title: id ? "Edit Account" : "Add Account",
+      bodyHtml: accountFormHtml(item),
+      footHtml: `<button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn" onclick="document.getElementById('accountForm').requestSubmit()">${id ? "Save Changes" : "Add Account"}</button>`,
+    });
+  };
+  if (id) {
+    const found = state.caches.accounts.find((a) => a.id === id);
+    launch(found || {});
+  } else {
+    launch({});
+  }
+}
+
+async function saveAccount(event, id) {
+  event.preventDefault();
+  const payload = { name: $("accName").value, account_type: $("accType").value, notes: $("accNotes").value };
+  if (!id) payload.opening_balance = $("accOpening").value || 0;
+  try {
+    if (id) await api(`/api/accounts/${id}`, "PUT", payload);
+    else await api("/api/accounts", "POST", payload);
+    closeModal();
+    toast(id ? "Account updated" : "Account added", "success");
+    await loadAccountsCache();
+    loadAccounts();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+function confirmDeleteAccount(id) {
+  confirmModal("Delete this account? Transactions linked to it will keep their history but lose the account reference.", async () => {
+    await apiAction(() => api(`/api/accounts/${id}`, "DELETE"), "Account deleted");
+    await loadAccountsCache();
+    loadAccounts();
+  });
+}
+
+/* =========================================================================
+   PAYEES
+   ========================================================================= */
+
+const payeesState = { limit: 25, offset: 0 };
+
+async function loadPayees(offset) {
+  if (typeof offset === "number") payeesState.offset = offset;
+  const params = new URLSearchParams({ limit: payeesState.limit, offset: payeesState.offset, q: $("payeesSearch").value.trim() });
+  [...params.keys()].forEach((k) => { if (!params.get(k)) params.delete(k); });
+
+  let data;
+  try {
+    data = await api(`/api/payees?${params.toString()}`);
+  } catch (err) { toast(err.message, "error"); return; }
+
+  $("payeesTable").innerHTML = data.items.length ? `
+    <table>
+      <thead><tr><th>Name</th><th>Category</th><th>Email</th><th class="right">Bills</th><th class="right">Total Paid</th><th></th></tr></thead>
+      <tbody>
+        ${data.items.map((p) => `
+          <tr>
+            <td>${escapeHtml(p.name)}</td>
+            <td>${escapeHtml(p.category || "—")}</td>
+            <td>${escapeHtml(p.email || "—")}</td>
+            <td class="right num">${p.bill_count}</td>
+            <td class="right">${fmtMoney(p.total_paid, { neutral: true })}</td>
+            <td>
+              <div class="row-actions">
+                <button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="openPayeeModal(${p.id})">Edit</button>
+                <button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="confirmDeletePayee(${p.id})">Delete</button>
+              </div>
+            </td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  ` : `<div class="empty-state"><div class="ic">☍</div><div class="t">No payees yet</div></div>`;
+
+  applyRoleGates();
+  renderPagination($("payeesPagination"), data.total, data.limit, data.offset, loadPayees);
+}
+
+function payeeFormHtml(item) {
+  item = item || {};
+  return `
+    <form id="payeeForm" class="form-grid" onsubmit="savePayee(event, ${item.id || "null"})">
+      <div class="field"><label>Name *</label><input id="payName" required value="${escapeHtml(item.name || "")}" /></div>
+      <div class="field"><label>Category</label><select id="payCategory">${categoryOptions("bill", item.category)}</select></div>
+      <div class="field"><label>Email</label><input id="payEmail" type="email" value="${escapeHtml(item.email || "")}" /></div>
+      <div class="field"><label>Phone</label><input id="payPhone" value="${escapeHtml(item.phone || "")}" /></div>
+      <div class="field full"><label>Address</label><textarea id="payAddress">${escapeHtml(item.address || "")}</textarea></div>
+      <div class="field full"><label>Notes</label><textarea id="payNotesField">${escapeHtml(item.notes || "")}</textarea></div>
+    </form>
+  `;
+}
+
+function openPayeeModal(id) {
+  const launch = (item) => {
+    openModal({
+      title: id ? "Edit Payee" : "Add Payee",
+      bodyHtml: payeeFormHtml(item),
+      footHtml: `<button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn" onclick="document.getElementById('payeeForm').requestSubmit()">${id ? "Save Changes" : "Add Payee"}</button>`,
+    });
+  };
+  if (id) {
+    api(`/api/payees/${id}`).then(launch).catch((err) => toast(err.message, "error"));
+  } else {
+    launch({});
+  }
+}
+
+async function savePayee(event, id) {
+  event.preventDefault();
+  const payload = {
+    name: $("payName").value, category: $("payCategory").value, email: $("payEmail").value,
+    phone: $("payPhone").value, address: $("payAddress").value, notes: $("payNotesField").value,
+  };
+  try {
+    if (id) await api(`/api/payees/${id}`, "PUT", payload);
+    else await api("/api/payees", "POST", payload);
+    closeModal();
+    toast(id ? "Payee updated" : "Payee added", "success");
+    await loadPayeesCache();
+    loadPayees();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+function confirmDeletePayee(id) {
+  confirmModal("Delete this payee?", async () => {
+    await apiAction(() => api(`/api/payees/${id}`, "DELETE"), "Payee deleted");
+    await loadPayeesCache();
+    loadPayees();
+  });
+}
+
+/* =========================================================================
+   MEMBERS
+   ========================================================================= */
+
+async function loadMembers() {
+  let items;
+  try {
+    items = await api("/api/members");
+  } catch (err) { toast(err.message, "error"); return; }
+  state.caches.members = items;
+
+  $("membersTable").innerHTML = items.length ? `
+    <table>
+      <thead><tr><th>Name</th><th>Email</th><th>Role</th><th></th></tr></thead>
+      <tbody>
+        ${items.map((m) => `
+          <tr>
+            <td>${escapeHtml(m.name)}</td>
+            <td>${escapeHtml(m.email || "—")}</td>
+            <td>${escapeHtml(m.role || "—")}</td>
+            <td>
+              <div class="row-actions">
+                <button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="openMemberModal(${m.id})">Edit</button>
+                <button class="btn ghost small role-gate" data-role="Admin" onclick="confirmDeleteMember(${m.id})">Delete</button>
+              </div>
+            </td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  ` : `<div class="empty-state"><div class="ic">☺</div><div class="t">No family members added yet</div></div>`;
+
+  applyRoleGates();
+}
+
+function memberFormHtml(item) {
+  item = item || {};
+  return `
+    <form id="memberForm" class="form-grid" onsubmit="saveMember(event, ${item.id || "null"})">
+      <div class="field"><label>Name *</label><input id="memName" required value="${escapeHtml(item.name || "")}" /></div>
+      <div class="field"><label>Role / Relation</label><input id="memRole" placeholder="e.g. Parent, Teen" value="${escapeHtml(item.role || "")}" /></div>
+      <div class="field full"><label>Email</label><input id="memEmail" type="email" value="${escapeHtml(item.email || "")}" /></div>
+    </form>
+  `;
+}
+
+function openMemberModal(id) {
+  const launch = (item) => {
+    openModal({
+      title: id ? "Edit Member" : "Add Member",
+      bodyHtml: memberFormHtml(item),
+      footHtml: `<button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn" onclick="document.getElementById('memberForm').requestSubmit()">${id ? "Save Changes" : "Add Member"}</button>`,
+    });
+  };
+  if (id) {
+    const found = state.caches.members.find((m) => m.id === id);
+    launch(found || {});
+  } else {
+    launch({});
+  }
+}
+
+async function saveMember(event, id) {
+  event.preventDefault();
+  const payload = { name: $("memName").value, role: $("memRole").value, email: $("memEmail").value };
+  try {
+    if (id) await api(`/api/members/${id}`, "PUT", payload);
+    else await api("/api/members", "POST", payload);
+    closeModal();
+    toast(id ? "Member updated" : "Member added", "success");
+    await loadMembersCache();
+    loadMembers();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+function confirmDeleteMember(id) {
+  confirmModal("Delete this member?", async () => {
+    await apiAction(() => api(`/api/members/${id}`, "DELETE"), "Member deleted");
+    await loadMembersCache();
+    loadMembers();
+  });
+}
+
+
+/* =========================================================================
+   CATEGORIES
+   ========================================================================= */
+
+let currentCategoryType = "expense";
+
+function showCategoryTab(type) {
+  currentCategoryType = type;
+  qsa("#categoriesTabs .tab-inline-btn").forEach((b) => b.classList.toggle("active", b.dataset.cat === type));
+  loadCategories();
+}
+
+async function loadCategories() {
+  let items;
+  try {
+    items = await api(`/api/categories?type=${currentCategoryType}&active_only=0`);
+  } catch (err) { toast(err.message, "error"); return; }
+
+  $("categoriesTable").innerHTML = items.length ? `
+    <table>
+      <thead><tr><th>Name</th><th>Status</th><th></th></tr></thead>
+      <tbody>
+        ${items.map((c) => `
+          <tr>
+            <td>${escapeHtml(c.name)}</td>
+            <td>${c.is_active ? `<span class="pill success">Active</span>` : `<span class="pill">Inactive</span>`}</td>
+            <td>
+              <div class="row-actions">
+                <button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="toggleCategoryActive(${c.id}, ${c.is_active ? 0 : 1})">${c.is_active ? "Deactivate" : "Activate"}</button>
+                <button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="openCategoryModal(${c.id}, '${escapeHtml(c.name).replace(/'/g, "\\'")}')">Rename</button>
+                <button class="btn ghost small role-gate" data-role="Admin" onclick="confirmDeleteCategory(${c.id})">Delete</button>
+              </div>
+            </td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  ` : `<div class="empty-state"><div class="ic">▾</div><div class="t">No ${currentCategoryType} categories yet</div></div>`;
+
+  applyRoleGates();
+}
+
+function openCategoryModal(id, currentName) {
+  openModal({
+    title: id ? "Rename Category" : "Add Category",
+    bodyHtml: `
+      <form id="categoryForm" onsubmit="saveCategory(event, ${id || "null"})">
+        <div class="field"><label>Name *</label><input id="catName" required value="${escapeHtml(currentName || "")}" /></div>
+        ${!id ? `<div class="field"><label>Type *</label>
+          <select id="catType">
+            <option value="expense" ${currentCategoryType === "expense" ? "selected" : ""}>Expense</option>
+            <option value="income" ${currentCategoryType === "income" ? "selected" : ""}>Income</option>
+            <option value="bill" ${currentCategoryType === "bill" ? "selected" : ""}>Bill</option>
+          </select></div>` : ""}
+      </form>
+    `,
+    footHtml: `<button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn" onclick="document.getElementById('categoryForm').requestSubmit()">${id ? "Save" : "Add"}</button>`,
+  });
+}
+
+async function saveCategory(event, id) {
+  event.preventDefault();
+  try {
+    if (id) {
+      await api(`/api/categories/${id}`, "PUT", { name: $("catName").value });
+    } else {
+      await api("/api/categories", "POST", { name: $("catName").value, type: $("catType").value });
     }
+    closeModal();
+    toast(id ? "Category updated" : "Category added", "success");
+    await loadCategoriesCache();
+    loadCategories();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
 
-    async function createExpense(event) {
-      event.preventDefault();
+async function toggleCategoryActive(id, nextVal) {
+  try {
+    await api(`/api/categories/${id}`, "PUT", { is_active: nextVal });
+    toast(nextVal ? "Category activated" : "Category deactivated", "success");
+    await loadCategoriesCache();
+    loadCategories();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
 
-      await api("/api/expenses", "POST", {
-        title: $("expenseTitle").value,
-        category: $("expenseCategory").value,
-        amount: $("expenseAmount").value,
-        expense_date: $("expenseDate").value,
-        store: $("expenseStore").value,
-        member: $("expenseMember").value,
-        notes: $("expenseNotes").value
-      });
+function confirmDeleteCategory(id) {
+  confirmModal("Delete this category permanently?", async () => {
+    await apiAction(() => api(`/api/categories/${id}`, "DELETE"), "Category deleted");
+    await loadCategoriesCache();
+    loadCategories();
+  });
+}
 
-      $("expenseForm").reset();
-      $("expenseForm").classList.add("hidden");
-      await loadExpenses();
+/* =========================================================================
+   NOTIFICATIONS
+   ========================================================================= */
+
+async function refreshNotifBadge() {
+  try {
+    const data = await api("/api/notifications?limit=1&offset=0");
+    const unread = (data.items || []).filter((n) => !n.is_read).length;
+    const totalUnread = data.unread_count !== undefined ? data.unread_count : unread;
+    const badge = $("notifBadge");
+    if (totalUnread > 0) {
+      badge.textContent = totalUnread > 9 ? "9+" : totalUnread;
+      badge.classList.remove("hidden");
+    } else {
+      badge.classList.add("hidden");
     }
+  } catch (err) { /* silent */ }
+}
 
-    async function loadIncome() {
-      const data = await api("/api/income?limit=50");
+async function loadNotifications() {
+  let data;
+  try {
+    data = await api("/api/notifications?limit=20&offset=0");
+  } catch (err) { $("notifList").innerHTML = `<div class="empty-state" style="padding:24px;">Couldn't load notifications.</div>`; return; }
 
-      $("incomeTable").innerHTML = data.items.length
-        ? `
-          <table>
-            <thead>
-              <tr>
-                <th>Title</th>
-                <th>Category</th>
-                <th>Date</th>
-                <th>Member</th>
-                <th class="right">Amount</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${data.items.map((item) => `
-                <tr>
-                  <td>${escapeHtml(item.title)}</td>
-                  <td>${escapeHtml(item.category)}</td>
-                  <td>${escapeHtml(item.income_date)}</td>
-                  <td>${escapeHtml(item.member || "")}</td>
-                  <td class="right">${escapeHtml(item.amount)}</td>
-                </tr>
-              `).join("")}
-            </tbody>
-          </table>
-        `
-        : `<p class="muted">No income found.</p>`;
-    }
+  const items = data.items || [];
+  $("notifList").innerHTML = items.length ? items.map((n) => `
+    <div class="notif-item ${n.is_read ? "" : "unread"}" onclick="markNotificationRead(${n.id})">
+      <div class="t">${escapeHtml(n.title)}</div>
+      <div class="b">${escapeHtml(n.body || "")}</div>
+      <div class="d">${fmtDateTime(n.created_at)}</div>
+    </div>
+  `).join("") : `<div class="empty-state" style="padding:24px;">No notifications yet.</div>`;
 
-    async function createIncome(event) {
-      event.preventDefault();
+  refreshNotifBadge();
+}
 
-      await api("/api/income", "POST", {
-        title: $("incomeTitle").value,
-        category: $("incomeCategory").value,
-        amount: $("incomeAmount").value,
-        income_date: $("incomeDate").value,
-        source: $("incomeSource").value,
-        member: $("incomeMember").value,
-        notes: $("incomeNotes").value
-      });
+async function markNotificationRead(id) {
+  try {
+    await api(`/api/notifications/${id}/read`, "POST");
+    loadNotifications();
+  } catch (err) { /* silent */ }
+}
 
-      $("incomeForm").reset();
-      $("incomeForm").classList.add("hidden");
-      await loadIncome();
-    }
+async function markAllNotificationsRead() {
+  try {
+    await api("/api/notifications/read-all", "POST");
+    loadNotifications();
+    toast("All notifications marked read", "success");
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
 
-    function billPill(status) {
-      const value = status || "";
-      let className = "";
+/* =========================================================================
+   SETTINGS
+   ========================================================================= */
 
-      if (value === "Paid") className = "success";
-      if (value === "Pending" || value === "Partially Paid") className = "warning";
-      if (value === "Void") className = "danger";
+async function loadSettingsView() {
+  let data;
+  try {
+    data = await api("/api/settings");
+  } catch (err) { toast(err.message, "error"); return; }
 
-      return `<span class="pill ${className}">${escapeHtml(value)}</span>`;
-    }
+  state.settings = data;
+  $("settingsFamilyName").value = data.family_name || "";
+  $("settingsEmail").value = data.primary_email || "";
+  $("settingsPhone").value = data.primary_phone || "";
+  $("settingsCurrencySymbol").value = data.currency_symbol || "$";
+  $("settingsCurrencyCode").value = data.currency_code || "USD";
+  $("settingsBillPrefix").value = data.bill_number_prefix || "";
+  $("settingsMonthlyIncomeGoal").value = data.monthly_income_goal ?? "";
+  $("settingsSavingsTargetPct").value = data.savings_target_pct ?? "";
+  $("settingsFamilyAddress").value = data.family_address || "";
+  $("settingsFamilyNotes").value = data.family_notes || "";
 
-    async function loadBills() {
-      const data = await api("/api/bills?limit=50");
+  const canEdit = hasRole("Admin");
+  qsa("#settingsForm input, #settingsForm textarea, #settingsForm button[type=submit]").forEach((el) => { el.disabled = !canEdit; });
+}
 
-      $("billsTable").innerHTML = data.items.length
-        ? `
-          <table>
-            <thead>
-              <tr>
-                <th>Bill #</th>
-                <th>Payee</th>
-                <th>Category</th>
-                <th>Due Date</th>
-                <th class="right">Total</th>
-                <th class="right">Paid</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${data.items.map((item) => `
-                <tr>
-                  <td>${escapeHtml(item.bill_number)}</td>
-                  <td>${escapeHtml(item.payee_name)}</td>
-                  <td>${escapeHtml(item.bill_category)}</td>
-                  <td>${escapeHtml(item.due_date)}</td>
-                  <td class="right">${escapeHtml(item.total_amount)}</td>
-                  <td class="right">${escapeHtml(item.paid_amount)}</td>
-                  <td>${billPill(item.display_status || item.status)}</td>
-                </tr>
-              `).join("")}
-            </tbody>
-          </table>
-        `
-        : `<p class="muted">No bills found.</p>`;
-    }
+async function saveSettings(event) {
+  event.preventDefault();
+  const payload = {
+    family_name: $("settingsFamilyName").value,
+    primary_email: $("settingsEmail").value,
+    primary_phone: $("settingsPhone").value,
+    currency_symbol: $("settingsCurrencySymbol").value,
+    currency_code: $("settingsCurrencyCode").value,
+    bill_number_prefix: $("settingsBillPrefix").value,
+    monthly_income_goal: $("settingsMonthlyIncomeGoal").value || 0,
+    savings_target_pct: $("settingsSavingsTargetPct").value || 0,
+    family_address: $("settingsFamilyAddress").value,
+    family_notes: $("settingsFamilyNotes").value,
+  };
+  try {
+    await api("/api/settings", "POST", payload);
+    toast("Settings saved", "success");
+    await loadSettingsCache();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
 
-    async function createBill(event) {
-      event.preventDefault();
+/* =========================================================================
+   USERS (Admin only)
+   ========================================================================= */
 
-      await api("/api/bills", "POST", {
-        payee_name: $("billPayee").value,
-        bill_category: $("billCategory").value,
-        bill_date: $("billDate").value,
-        due_date: $("billDueDate").value,
-        tax_rate: $("billTaxRate").value || "0",
-        notes: $("billNotes").value,
-        items: [
-          {
-            item_name: $("billItemName").value,
-            quantity: $("billQuantity").value,
-            unit_price: $("billUnitPrice").value
-          }
-        ]
-      });
+let usersCache = [];
 
-      $("billForm").reset();
-      $("billForm").classList.add("hidden");
-      await loadBills();
-    }
+function roleBadge(role) {
+  const cls = role === "Admin" ? "success" : role === "Editor" ? "info" : "";
+  return `<span class="pill ${cls}">${escapeHtml(role)}</span>`;
+}
 
-    async function loadBudgets() {
-      const data = await api("/api/budgets");
+async function loadUsers() {
+  try {
+    usersCache = await api("/api/users");
+  } catch (err) {
+    $("usersTable").innerHTML = `<div class="empty-state">Couldn't load users.</div>`;
+    return;
+  }
 
-      $("budgetsTable").innerHTML = data.length
-        ? `
-          <table>
-            <thead>
-              <tr>
-                <th>Category</th>
-                <th>Period</th>
-                <th>Member</th>
-                <th class="right">Amount</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${data.map((item) => `
-                <tr>
-                  <td>${escapeHtml(item.category)}</td>
-                  <td>${escapeHtml(item.period)}</td>
-                  <td>${escapeHtml(item.member || "")}</td>
-                  <td class="right">${escapeHtml(item.amount)}</td>
-                </tr>
-              `).join("")}
-            </tbody>
-          </table>
-        `
-        : `<p class="muted">No budgets found.</p>`;
-    }
+  $("usersTable").innerHTML = usersCache.length ? `
+    <table>
+      <thead><tr><th>Username</th><th>Role</th><th>Added</th><th></th></tr></thead>
+      <tbody>
+        ${usersCache.map((u) => `
+          <tr>
+            <td>${escapeHtml(u.username)}${u.username === state.user.username ? ` <span class="field-hint">(you)</span>` : ""}</td>
+            <td>${roleBadge(u.role)}</td>
+            <td>${fmtDate(u.created_at)}</td>
+            <td>
+              <div class="row-actions">
+                <button class="btn ghost small" onclick="openUserModal(${u.id})">Edit</button>
+                ${u.username === state.user.username ? "" : `<button class="btn ghost small" onclick="confirmDeleteUser(${u.id}, '${escapeHtml(u.username).replace(/'/g, "\\'")}')">Delete</button>`}
+              </div>
+            </td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  ` : `<div class="empty-state">No users found.</div>`;
+}
 
-    async function createBudget(event) {
-      event.preventDefault();
+function userFormHtml(user) {
+  user = user || {};
+  const isEdit = !!user.id;
+  return `
+    <form id="userForm" class="form-grid" onsubmit="saveUser(event, ${user.id || "null"})">
+      <div class="field ${isEdit ? "full" : ""}"><label>Username *</label><input id="userUsername" required ${isEdit ? "disabled" : ""} value="${escapeHtml(user.username || "")}" /></div>
+      <div class="field"><label>Role *</label>
+        <select id="userRole">
+          <option value="Admin" ${user.role === "Admin" ? "selected" : ""}>Admin</option>
+          <option value="Editor" ${!user.role || user.role === "Editor" ? "selected" : ""}>Editor</option>
+          <option value="Viewer" ${user.role === "Viewer" ? "selected" : ""}>Viewer</option>
+        </select>
+      </div>
+      <div class="field full"><label>${isEdit ? "New Password (leave blank to keep current)" : "Password *"}</label>
+        <input id="userPassword" type="password" autocomplete="new-password" minlength="8" ${isEdit ? "" : "required"} />
+      </div>
+      <div class="field-hint full">At least 8 characters.</div>
+    </form>
+  `;
+}
 
-      await api("/api/budgets", "POST", {
-        category: $("budgetCategory").value,
-        period: $("budgetPeriod").value,
-        amount: $("budgetAmount").value,
-        member: $("budgetMember").value,
-        notes: $("budgetNotes").value
-      });
+function openUserModal(id) {
+  const launch = (user) => {
+    openModal({
+      title: id ? `Edit ${user.username}` : "Add Household User",
+      bodyHtml: userFormHtml(user),
+      footHtml: `<button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn" onclick="document.getElementById('userForm').requestSubmit()">${id ? "Save Changes" : "Add User"}</button>`,
+    });
+  };
+  if (id) {
+    launch(usersCache.find((u) => u.id === id) || {});
+  } else {
+    launch({});
+  }
+}
 
-      $("budgetForm").reset();
-      $("budgetForm").classList.add("hidden");
-      await loadBudgets();
-    }
+async function saveUser(event, id) {
+  event.preventDefault();
+  const password = $("userPassword").value;
+  const payload = { role: $("userRole").value };
+  if (password) payload.password = password;
+  if (!id) payload.username = $("userUsername").value;
 
-    async function loadGoals() {
-      const data = await api("/api/goals");
+  try {
+    if (id) await api(`/api/users/${id}`, "PUT", payload);
+    else await api("/api/users", "POST", payload);
+    closeModal();
+    toast(id ? "User updated" : "User added", "success");
+    loadUsers();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
 
-      $("goalsTable").innerHTML = data.length
-        ? `
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Target Date</th>
-                <th class="right">Target</th>
-                <th class="right">Current</th>
-                <th class="right">Progress</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              ${data.map((item) => `
-                <tr>
-                  <td>${escapeHtml(item.name)}</td>
-                  <td>${escapeHtml(item.target_date || "")}</td>
-                  <td class="right">${escapeHtml(item.target)}</td>
-                  <td class="right">${escapeHtml(item.current)}</td>
-                  <td class="right">${escapeHtml(item.progress_pct)}%</td>
-                  <td>
-                    <button class="btn small" onclick="contributeGoal(${item.id})">Contribute</button>
-                  </td>
-                </tr>
-              `).join("")}
-            </tbody>
-          </table>
-        `
-        : `<p class="muted">No goals found.</p>`;
-    }
+function confirmDeleteUser(id, username) {
+  confirmModal(`Remove "${username}" from your household users? They'll no longer be able to sign in.`, async () => {
+    await apiAction(() => api(`/api/users/${id}`, "DELETE"), "User removed");
+    loadUsers();
+  });
+}
 
-    async function createGoal(event) {
-      event.preventDefault();
+/* =========================================================================
+   ADMIN
+   ========================================================================= */
 
-      await api("/api/goals", "POST", {
-        name: $("goalName").value,
-        target: $("goalTarget").value,
-        current: $("goalCurrent").value,
-        target_date: $("goalTargetDate").value || null,
-        notes: $("goalNotes").value
-      });
+async function loadAudit(offset) {
+  if (typeof offset !== "number") offset = 0;
+  let data;
+  try {
+    data = await api(`/api/admin/audit?limit=30&offset=${offset}`);
+  } catch (err) { toast(err.message, "error"); return; }
 
-      $("goalForm").reset();
-      $("goalForm").classList.add("hidden");
-      await loadGoals();
-    }
+  $("auditTable").innerHTML = data.items.length ? `
+    <table>
+      <thead><tr><th>When</th><th>User</th><th>Action</th><th>Entity</th><th class="wrap">Details</th></tr></thead>
+      <tbody>
+        ${data.items.map((a) => `
+          <tr>
+            <td>${fmtDateTime(a.created_at)}</td>
+            <td>${escapeHtml(a.username || "—")}</td>
+            <td>${escapeHtml(a.action)}</td>
+            <td>${escapeHtml(a.entity_type || "")}${a.entity_id ? " #" + a.entity_id : ""}</td>
+            <td class="wrap">${escapeHtml(a.details || "")}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  ` : `<div class="empty-state">No audit entries yet</div>`;
 
-    async function contributeGoal(goalId) {
-      const amount = prompt("Contribution amount:");
+  renderPagination($("auditPagination"), data.total, data.limit, data.offset, loadAudit);
+}
 
-      if (!amount) {
-        return;
-      }
+function downloadBackup() {
+  window.open("/api/admin/backup", "_blank");
+}
 
-      await api(`/api/goals/${goalId}/contribute`, "POST", {
-        amount
-      });
+/* =========================================================================
+   BOOTSTRAP
+   ========================================================================= */
 
-      await loadGoals();
-    }
-
-    async function loadSettings() {
-      const data = await api("/api/settings");
-
-      $("settingsFamilyName").value = data.family_name || "";
-      $("settingsEmail").value = data.primary_email || "";
-      $("settingsPhone").value = data.primary_phone || "";
-      $("settingsCurrencySymbol").value = data.currency_symbol || "";
-      $("settingsCurrencyCode").value = data.currency_code || "";
-      $("settingsBillPrefix").value = data.bill_prefix || "";
-      $("settingsMonthlyIncomeGoal").value = data.monthly_income_goal || "";
-      $("settingsSavingsTargetPct").value = data.savings_target_pct || "";
-      $("settingsFamilyAddress").value = data.family_address || "";
-      $("settingsFamilyNotes").value = data.family_notes || "";
-    }
-
-    async function saveSettings(event) {
-      event.preventDefault();
-
-      await api("/api/settings", "POST", {
-        family_name: $("settingsFamilyName").value,
-        primary_email: $("settingsEmail").value,
-        primary_phone: $("settingsPhone").value,
-        currency_symbol: $("settingsCurrencySymbol").value,
-        currency_code: $("settingsCurrencyCode").value,
-        bill_prefix: $("settingsBillPrefix").value,
-        monthly_income_goal: $("settingsMonthlyIncomeGoal").value,
-        savings_target_pct: $("settingsSavingsTargetPct").value,
-        family_address: $("settingsFamilyAddress").value,
-        family_notes: $("settingsFamilyNotes").value
-      });
-
-      alert("Settings saved.");
-    }
-
-    async function bootstrap() {
-      try {
-        const data = await api("/api/me");
-        csrf = data.csrf_token;
-        $("userLabel").textContent = `${data.user.username} • ${data.user.role}`;
-        showApp();
-        showTab("dashboard");
-      } catch (err) {
-        showLogin();
-      }
-    }
-
-    $("loginForm").addEventListener("submit", login);
-    bootstrap();
-  </script>
+bootstrap();
+</script>
 </body>
 </html>
