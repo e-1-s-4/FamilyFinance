@@ -509,3 +509,36 @@ def test_allowances_crud(client):
     al_list = resp.get_json()
     assert len(al_list) == 1
     assert al_list[0]["amount_cents"] == 2000
+
+
+def test_csv_import_and_reports(client):
+    token = login(client)
+    headers = auth_headers(token)
+
+    # Commit CSV import for expenses
+    commit_payload = {
+        "target_type": "expense",
+        "items": [
+            {
+                "title": "Bakery",
+                "category": "Groceries & Food",
+                "amount": "15.50",
+                "date": "2026-06-22",
+            },
+            {
+                "title": "Pharmacy",
+                "category": "Healthcare & Medical",
+                "amount": "22.00",
+                "date": "2026-06-23",
+            },
+        ],
+    }
+
+    resp = client.post("/api/import/csv/commit", headers=headers, json=commit_payload)
+    assert resp.status_code == 200
+    assert resp.get_json()["imported_count"] == 2
+
+    # Check that imported expenses appear in list
+    resp = client.get("/api/expenses", headers=headers)
+    assert resp.status_code == 200
+    assert resp.get_json()["total"] >= 2

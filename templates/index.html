@@ -269,7 +269,8 @@
   .app-shell {
     min-height: 100vh;
     display: grid;
-    grid-template-columns: 246px 1fr;
+    grid-template-columns: 246px minmax(0, 1fr);
+    align-items: start;
   }
 
   .sidebar {
@@ -1642,9 +1643,12 @@ const TAB_META = {
   goals: { title: "Goals", sub: "Savings targets and progress" },
   recurring: { title: "Recurring", sub: "Automated schedules" },
   reports: { title: "Reports", sub: "Trends across the year" },
+    debt: { title: "Debt Payoff", sub: "Snowball vs Avalanche debt strategy planner" },
+    forecast: { title: "Net Worth Forecast", sub: "12-month projections based on cash flow" },
   accounts: { title: "Accounts", sub: "Balances and net worth" },
   payees: { title: "Payees", sub: "Vendors and billers" },
   members: { title: "Members", sub: "Household members" },
+    allowances: { title: "Allowances", sub: "Weekly & monthly family allowances" },
   categories: { title: "Categories", sub: "Organize transactions" },
   settings: { title: "Settings", sub: "Family details and preferences" },
   admin: { title: "Admin", sub: "Backups and audit trail" },
@@ -2164,20 +2168,47 @@ async function loadExpenses(offset) {
   renderPagination($("expensesPagination"), data.total, data.limit, data.offset, loadExpenses);
 }
 
+let expSplitSeq = 0;
+
+function expenseSplitRowHtml(s) {
+  s = s || {};
+  const idx = expSplitSeq++;
+  return `
+    <div class="item-row exp-split-row" data-idx="${idx}">
+      <select class="es-category">${categoryOptions("expense", s.category)}</select>
+      <input placeholder="Amount" type="number" step="0.01" min="0.01" class="es-amount" value="${s.amount ?? ""}" />
+      <select class="es-member">${memberOptions(s.member)}</select>
+      <input placeholder="Notes" class="es-notes" value="${escapeHtml(s.notes || "")}" />
+      <button type="button" class="btn ghost icon-only small" onclick="this.closest('.exp-split-row').remove()" title="Remove split">✕</button>
+    </div>
+  `;
+}
+
 function expenseFormHtml(item) {
   item = item || {};
+  expSplitSeq = 0;
+  const splits = item.splits || [];
   return `
-    <form id="expenseForm" class="form-grid" onsubmit="saveExpense(event, ${item.id || "null"})">
-      <div class="field"><label>Title *</label><input id="expTitle" required value="${escapeHtml(item.title || "")}" /></div>
-      <div class="field"><label>Amount *</label><input id="expAmount" type="number" step="0.01" min="0.01" required value="${item.amount ?? ""}" /></div>
-      <div class="field"><label>Category *</label><select id="expCategory">${categoryOptions("expense", item.category)}</select></div>
-      <div class="field"><label>Date *</label><input id="expDate" type="date" required value="${item.expense_date || todayIso()}" /></div>
-      <div class="field"><label>Store / Vendor</label><input id="expStore" value="${escapeHtml(item.store || "")}" /></div>
-      <div class="field"><label>Member</label><select id="expMember">${memberOptions(item.member)}</select></div>
-      <div class="field"><label>Account</label><select id="expAccount">${accountOptions(item.account_id)}</select></div>
-      <div class="field"><label>Receipt Ref</label><input id="expReceipt" value="${escapeHtml(item.receipt_ref || "")}" /></div>
-      <div class="field full"><label>Tags (comma-separated)</label><input id="expTags" value="${escapeHtml(item.tags || "")}" /></div>
-      <div class="field full"><label>Notes</label><textarea id="expNotes">${escapeHtml(item.notes || "")}</textarea></div>
+    <form id="expenseForm" onsubmit="saveExpense(event, ${item.id || "null"})">
+      <div class="form-grid">
+        <div class="field"><label>Title *</label><input id="expTitle" required value="${escapeHtml(item.title || "")}" /></div>
+        <div class="field"><label>Total Amount *</label><input id="expAmount" type="number" step="0.01" min="0.01" required value="${item.amount ?? ""}" /></div>
+        <div class="field"><label>Primary Category *</label><select id="expCategory">${categoryOptions("expense", item.category)}</select></div>
+        <div class="field"><label>Date *</label><input id="expDate" type="date" required value="${item.expense_date || todayIso()}" /></div>
+        <div class="field"><label>Store / Vendor</label><input id="expStore" value="${escapeHtml(item.store || "")}" /></div>
+        <div class="field"><label>Member</label><select id="expMember">${memberOptions(item.member)}</select></div>
+        <div class="field"><label>Account</label><select id="expAccount">${accountOptions(item.account_id)}</select></div>
+        <div class="field"><label>Receipt Ref</label><input id="expReceipt" value="${escapeHtml(item.receipt_ref || "")}" /></div>
+        <div class="field full"><label>Tags (comma-separated)</label><input id="expTags" value="${escapeHtml(item.tags || "")}" /></div>
+        <div class="field full"><label>Notes</label><textarea id="expNotes">${escapeHtml(item.notes || "")}</textarea></div>
+      </div>
+
+      <fieldset style="margin-top:16px;">
+        <legend>Category / Member Splits (Optional)</legend>
+        <p class="field-hint" style="margin-bottom:8px;">If provided, the sum of split amounts must equal the Total Amount above.</p>
+        <div id="expSplitsWrap">${splits.map((s) => expenseSplitRowHtml(s)).join("")}</div>
+        <button type="button" class="btn secondary small" onclick="qs('#expSplitsWrap').insertAdjacentHTML('beforeend', expenseSplitRowHtml())">+ Add Split</button>
+      </fieldset>
     </form>
   `;
 }
@@ -2202,6 +2233,13 @@ function openExpenseModal(id) {
 
 async function saveExpense(event, id) {
   event.preventDefault();
+  const splits = qsa("#expSplitsWrap .exp-split-row").map((row) => ({
+    category: qs(".es-category", row).value,
+    amount: qs(".es-amount", row).value,
+    member: qs(".es-member", row).value,
+    notes: qs(".es-notes", row).value,
+  })).filter((s) => s.amount);
+
   const payload = {
     title: $("expTitle").value,
     amount: $("expAmount").value,
@@ -2214,6 +2252,10 @@ async function saveExpense(event, id) {
     tags: $("expTags").value,
     notes: $("expNotes").value,
   };
+  if (splits.length > 0) {
+    payload.splits = splits;
+  }
+
   try {
     if (id) await api(`/api/expenses/${id}`, "PUT", payload);
     else await api("/api/expenses", "POST", payload);
