@@ -2,6 +2,9 @@
 
 FamilyFinance is a personal and family-oriented budget tracking application built with Python, Flask, and SQLite. It helps you track income, expenses, bills, payees, budgets, savings goals, recurring transactions, accounts, and financial reports in one place.
 
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/40d78bf5-2dfb-4014-accc-c7d4d92e18f0" />
+
+
 This README documents the enhanced version of the project, including session authentication, CSRF protection, role support, improved money handling, budgets, goals, recurring rules, notifications, audit logs, reports, backups, and production-ready configuration options.
 
 ### What's New in This Pass
