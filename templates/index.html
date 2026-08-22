@@ -2051,8 +2051,23 @@ function categoryOptions(type, selected) {
   return optionsHtml(state.caches.categories[type] || [], { value: "name", label: "name", selected, blankLabel: null });
 }
 
-function memberOptions(selected) {
-  return optionsHtml(state.caches.members, { value: "name", label: "name", selected, blankLabel: "— None —" });
+function memberOptions(selected, { useId = false, includeNone = true, includeAll = true, allValue = "all" } = {}) {
+  let out = "";
+  if (includeNone) out += `<option value="">— None —</option>`;
+  if (includeAll) out += `<option value="${escapeHtml(allValue)}">All members</option>`;
+  return out + optionsHtml(state.caches.members, { value: useId ? "id" : "name", label: "name", selected });
+}
+
+function evenSplitAcrossMembers(totalAmount) {
+  const members = state.caches.members || [];
+  if (!members.length) throw new Error("No members found — add a family member first");
+  const totalCents = Math.round(parseFloat(totalAmount) * 100);
+  const base = Math.floor(totalCents / members.length);
+  const remainder = totalCents - base * members.length;
+  return members.map((m, i) => ({
+    member: m.name,
+    amount: ((base + (i < remainder ? 1 : 0)) / 100).toFixed(2),
+  }));
 }
 
 function accountOptions(selected) {
@@ -2369,7 +2384,7 @@ function expenseSplitRowHtml(s) {
     <div class="item-row exp-split-row" data-idx="${idx}">
       <select class="es-category">${categoryOptions("expense", s.category)}</select>
       <input placeholder="Amount" type="number" step="0.01" min="0.01" class="es-amount" value="${s.amount ?? ""}" />
-      <select class="es-member">${memberOptions(s.member)}</select>
+      <select class="es-member">${memberOptions(s.member, { includeAll: false })}</select>
       <input placeholder="Notes" class="es-notes" value="${escapeHtml(s.notes || "")}" />
       <button type="button" class="btn ghost icon-only small" onclick="this.closest('.exp-split-row').remove()" title="Remove split">✕</button>
     </div>
@@ -2432,19 +2447,22 @@ async function saveExpense(event, id) {
     notes: qs(".es-notes", row).value,
   })).filter((s) => s.amount);
 
+  const memberVal = $("expMember").value;
   const payload = {
     title: $("expTitle").value,
     amount: $("expAmount").value,
     category: $("expCategory").value,
     expense_date: $("expDate").value,
     store: $("expStore").value,
-    member: $("expMember").value,
+    member: memberVal === "all" ? "" : memberVal,
     account_id: $("expAccount").value || null,
     receipt_ref: $("expReceipt").value,
     tags: $("expTags").value,
     notes: $("expNotes").value,
   };
-  if (splits.length > 0) {
+  if (memberVal === "all") {
+    payload.splits = evenSplitAcrossMembers(payload.amount);
+  } else if (splits.length > 0) {
     payload.splits = splits;
   }
 
@@ -2561,17 +2579,19 @@ function openIncomeModal(id) {
 
 async function saveIncome(event, id) {
   event.preventDefault();
+  const memberVal = $("incMember").value;
   const payload = {
     title: $("incTitle").value,
     amount: $("incAmount").value,
     category: $("incCategory").value,
     income_date: $("incDate").value,
     source: $("incSource").value,
-    member: $("incMember").value,
+    member: memberVal === "all" ? "" : memberVal,
     account_id: $("incAccount").value || null,
     tags: $("incTags").value,
     notes: $("incNotes").value,
   };
+  if (memberVal === "all") payload.splits = evenSplitAcrossMembers(payload.amount);
   try {
     if (id) await api(`/api/income/${id}`, "PUT", payload);
     else await api("/api/income", "POST", payload);
@@ -3010,7 +3030,7 @@ async function saveBudget(event, id) {
     category: $("budCategory").value,
     period: $("budPeriod").value,
     amount: $("budAmount").value,
-    member: $("budMember").value,
+    member: $("budMember").value === "all" ? "" : $("budMember").value,
     notes: $("budNotes").value,
   };
   try {
@@ -3284,13 +3304,13 @@ function collectRecurringPayload(entityType) {
   if (entityType === "expense") {
     return {
       title: $("rpTitle").value, amount: $("rpAmount").value, category: $("rpCategory").value,
-      store: $("rpStore").value, member: $("rpMember").value, account_id: $("rpAccount").value || null,
+      store: $("rpStore").value, member: $("rpMember").value === "all" ? "" : $("rpMember").value, account_id: $("rpAccount").value || null,
     };
   }
   if (entityType === "income") {
     return {
       title: $("rpTitle").value, amount: $("rpAmount").value, category: $("rpCategory").value,
-      source: $("rpSource").value, member: $("rpMember").value, account_id: $("rpAccount").value || null,
+      source: $("rpSource").value, member: $("rpMember").value === "all" ? "" : $("rpMember").value, account_id: $("rpAccount").value || null,
     };
   }
   return {
@@ -4365,11 +4385,14 @@ async function loadAllowances() {
 
 function openAllowanceModal(id) {
   const launch = (item) => {
+    const memberOpts = id
+      ? { useId: true, includeNone: false, includeAll: false }
+      : { useId: true, includeNone: false, allValue: "" };
     openModal({
       title: id ? "Edit Allowance" : "Add Allowance",
       bodyHtml: `
         <form id="allowanceForm" class="form-grid" onsubmit="saveAllowance(event, ${id || "null"})">
-          <div class="field"><label>Member *</label><select id="alMember">${memberOptions(item.member_id)}</select></div>
+          <div class="field"><label>Member *</label><select id="alMember">${memberOptions(item.member_id, memberOpts)}</select></div>
           <div class="field"><label>Frequency *</label>
             <select id="alFreq">
               <option value="monthly" ${item.frequency !== "weekly" ? "selected" : ""}>Monthly</option>
@@ -4393,17 +4416,28 @@ function openAllowanceModal(id) {
 
 async function saveAllowance(event, id) {
   event.preventDefault();
-  const payload = {
-    member_id: $("alMember").value,
+  const memberId = $("alMember").value;
+  const buildPayload = (mid) => ({
+    member_id: mid,
     frequency: $("alFreq").value,
     amount: $("alAmount").value,
     notes: $("alNotes").value,
-  };
+  });
   try {
-    if (id) await api(`/api/allowances/${id}`, "PUT", payload);
-    else await api("/api/allowances", "POST", payload);
-    closeModal();
-    toast(id ? "Allowance updated" : "Allowance created", "success");
+    if (!id && memberId === "") {
+      const members = state.caches.members || [];
+      if (!members.length) throw new Error("No members found — add a family member first");
+      for (const m of members) await api("/api/allowances", "POST", buildPayload(m.id));
+      closeModal();
+      toast(`Allowance created for ${members.length} members`, "success");
+    } else {
+      if (id && memberId === "") throw new Error("Select a specific member");
+      const payload = buildPayload(memberId);
+      if (id) await api(`/api/allowances/${id}`, "PUT", payload);
+      else await api("/api/allowances", "POST", payload);
+      closeModal();
+      toast(id ? "Allowance updated" : "Allowance created", "success");
+    }
     loadAllowances();
   } catch (err) {
     toast(err.message, "error");

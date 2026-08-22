@@ -5213,18 +5213,32 @@ def register_routes(app):
 
         this_month = date.today().strftime("%Y-%m")
 
-        spent_by_member = {
-            row["member"]: row["total"]
-            for row in conn.execute(
-                """
-                SELECT member, SUM(amount_cents) AS total
-                FROM expenses
-                WHERE is_deleted=0 AND strftime('%Y-%m', expense_date)=?
-                GROUP BY member
-                """,
-                (this_month,),
-            ).fetchall()
-        }
+        # Expenses without splits count their full amount toward their member;
+        # expenses WITH splits count only each split's share (no double counting).
+        spent_by_member = {}
+        for row in conn.execute(
+            """
+            SELECT member, SUM(amount_cents) AS total
+            FROM expenses e
+            WHERE e.is_deleted=0 AND strftime('%Y-%m', e.expense_date)=?
+              AND NOT EXISTS (SELECT 1 FROM expense_splits es WHERE es.expense_id=e.id)
+            GROUP BY member
+            """,
+            (this_month,),
+        ).fetchall():
+            spent_by_member[row["member"]] = spent_by_member.get(row["member"], 0) + row["total"]
+
+        for row in conn.execute(
+            """
+            SELECT es.member AS member, SUM(es.amount_cents) AS total
+            FROM expense_splits es
+            JOIN expenses e ON e.id = es.expense_id
+            WHERE e.is_deleted=0 AND strftime('%Y-%m', e.expense_date)=?
+            GROUP BY es.member
+            """,
+            (this_month,),
+        ).fetchall():
+            spent_by_member[row["member"]] = spent_by_member.get(row["member"], 0) + row["total"]
 
         items = rows_to_list(rows)
 
