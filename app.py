@@ -375,6 +375,11 @@ CREATE INDEX IF NOT EXISTS idx_expenses_account ON expenses(account_id);
 CREATE INDEX IF NOT EXISTS idx_income_account ON income(account_id);
 CREATE INDEX IF NOT EXISTS idx_bill_payments_account ON bill_payments(account_id);
 CREATE INDEX IF NOT EXISTS idx_budgets_active ON budgets(is_active, period, category);
+CREATE INDEX IF NOT EXISTS idx_allowances_member ON allowances(member_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action);
+CREATE INDEX IF NOT EXISTS idx_notifications_created ON notifications(created_at);
+CREATE INDEX IF NOT EXISTS idx_notifications_username ON notifications(username, is_read);
 """
 
 MINIMAL_INDEX = """
@@ -621,6 +626,23 @@ def parse_quantity(value, field="quantity"):
     return dec
 
 
+def parse_int(value, field="value", default=None, minimum=None):
+    if value is None or value == "":
+        if default is not None:
+            return default
+        raise ValidationError(f"{field} is required")
+
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        raise ValidationError(f"{field} is invalid")
+
+    if minimum is not None and result < minimum:
+        raise ValidationError(f"{field} must be at least {minimum}")
+
+    return result
+
+
 def cents_to_float(cents):
     return round(int(cents) / 100, 2)
 
@@ -631,6 +653,11 @@ def fmt_cents(cents):
 
 def cents_to_plain(cents):
     return f"{Decimal(int(cents)) / Decimal(100):.2f}"
+
+
+def escape_like(value):
+    """Escape SQL LIKE wildcards so user input matches literally."""
+    return str(value).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def sanitize_csv_cell(value):
@@ -1351,22 +1378,18 @@ def parse_bill_payload(data):
 def next_bill_number(conn, prefix="BILL"):
     prefix = re.sub(r"[^A-Za-z0-9\-]", "", str(prefix or "BILL")).upper() or "BILL"
 
-    conn.execute(
-        "INSERT OR IGNORE INTO bill_sequences (prefix, next_number) VALUES (?, 1)",
-        (prefix,),
-    )
-
+    # Single atomic UPSERT: concurrent callers each get a unique number even
+    # when they race, because the increment happens inside one statement.
     row = conn.execute(
-        "SELECT next_number FROM bill_sequences WHERE prefix=?",
+        """
+        INSERT INTO bill_sequences (prefix, next_number) VALUES (?, 2)
+        ON CONFLICT(prefix) DO UPDATE SET next_number = next_number + 1
+        RETURNING next_number
+        """,
         (prefix,),
     ).fetchone()
 
-    number = int(row["next_number"]) if row else 1
-
-    conn.execute(
-        "UPDATE bill_sequences SET next_number=? WHERE prefix=?",
-        (number + 1, prefix),
-    )
+    number = int(row["next_number"]) - 1
 
     return f"{prefix}-{number:04d}"
 
@@ -1897,7 +1920,11 @@ def register_routes(app):
             )
 
         if "currency_symbol" in settings:
-            settings["currency_symbol"] = str(settings["currency_symbol"]).strip()[:8]
+            settings["currency_symbol"] = re.sub(
+                r"[<>&\"']",
+                "",
+                str(settings["currency_symbol"]).strip(),
+            )[:8]
 
         if "currency_code" in settings:
             settings["currency_code"] = str(settings["currency_code"]).strip()[:3].upper()
@@ -1960,7 +1987,11 @@ def register_routes(app):
 
         with get_db() as conn:
             conn.execute(
-                "INSERT INTO categories (name, type, is_default, is_active) VALUES (?, ?, 0, 1)",
+                """
+                INSERT INTO categories (name, type, is_default, is_active)
+                VALUES (?, ?, 0, 1)
+                ON CONFLICT(name, type) DO UPDATE SET is_active=1
+                """,
                 (name, category_type),
             )
 
@@ -2052,6 +2083,9 @@ def register_routes(app):
             raise ValidationError("Member name is required")
 
         with get_db() as conn:
+            if not conn.execute("SELECT 1 FROM members WHERE id=?", (mid,)).fetchone():
+                return jsonify({"error": "Not found"}), 404
+
             conn.execute(
                 "UPDATE members SET name=?, email=?, role=?, is_active=? WHERE id=?",
                 (
@@ -2071,6 +2105,9 @@ def register_routes(app):
     @require_roles("Admin")
     def member_delete(mid):
         with get_db() as conn:
+            if not conn.execute("SELECT 1 FROM members WHERE id=?", (mid,)).fetchone():
+                return jsonify({"error": "Not found"}), 404
+
             conn.execute("UPDATE members SET is_active=0 WHERE id=?", (mid,))
 
         audit("member_deactivated", "member", mid)
@@ -2169,6 +2206,9 @@ def register_routes(app):
         )
 
         with get_db() as conn:
+            if not conn.execute("SELECT 1 FROM accounts WHERE id=?", (aid,)).fetchone():
+                return jsonify({"error": "Not found"}), 404
+
             conn.execute(
                 """
                 UPDATE accounts
@@ -2195,6 +2235,9 @@ def register_routes(app):
     @require_roles("Admin")
     def account_delete(aid):
         with get_db() as conn:
+            if not conn.execute("SELECT 1 FROM accounts WHERE id=?", (aid,)).fetchone():
+                return jsonify({"error": "Not found"}), 404
+
             conn.execute("UPDATE accounts SET is_active=0 WHERE id=?", (aid,))
 
         audit("account_deactivated", "account", aid)
@@ -2217,8 +2260,8 @@ def register_routes(app):
         params = []
 
         if q:
-            like = f"%{q}%"
-            where += " AND (p.name LIKE ? OR p.email LIKE ? OR p.phone LIKE ? OR p.notes LIKE ?)"
+            like = f"%{escape_like(q)}%"
+            where += """ AND (p.name LIKE ? ESCAPE '\\' OR p.email LIKE ? ESCAPE '\\' OR p.phone LIKE ? ESCAPE '\\' OR p.notes LIKE ? ESCAPE '\\')"""
             params.extend([like, like, like, like])
 
         if category:
@@ -2383,8 +2426,8 @@ def register_routes(app):
         params = []
 
         if q:
-            like = f"%{q}%"
-            sql += " AND (b.bill_number LIKE ? OR b.payee_name LIKE ? OR b.notes LIKE ?)"
+            like = f"%{escape_like(q)}%"
+            sql += """ AND (b.bill_number LIKE ? ESCAPE '\\' OR b.payee_name LIKE ? ESCAPE '\\' OR b.notes LIKE ? ESCAPE '\\')"""
             params.extend([like, like, like])
 
         if status:
@@ -2588,7 +2631,22 @@ def register_routes(app):
             if new_status not in BILL_STATUSES:
                 raise ValidationError("Invalid status")
 
-            with conn:
+            # Re-read and mutate inside an IMMEDIATE transaction so a
+            # concurrent payment cannot slip between the balance check and
+            # the mark-as-paid write.
+            if not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
+
+            try:
+                row = conn.execute(
+                    "SELECT * FROM bills WHERE id=? AND is_deleted=0",
+                    (bid,),
+                ).fetchone()
+
+                if not row:
+                    conn.rollback()
+                    return jsonify({"error": "Not found"}), 404
+
                 if new_status == "Paid":
                     balance = row["total_cents"] - row["paid_cents"]
 
@@ -2653,6 +2711,11 @@ def register_routes(app):
                         (new_status, bid),
                     )
 
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
             audit("bill_status_changed", "bill", bid, new_status)
 
             return jsonify({"success": True})
@@ -2677,6 +2740,11 @@ def register_routes(app):
 
         paid_cents = row["paid_cents"]
         paid_at = row["paid_at"]
+
+        if payload["status"] != "Void" and paid_cents > payload["total_cents"]:
+            raise ValidationError(
+                "total_amount cannot be less than the amount already paid on this bill"
+            )
 
         if payload["status"] == "Void":
             status = "Void"
@@ -2771,49 +2839,56 @@ def register_routes(app):
         data = json_payload()
         conn = get_db()
 
-        bill = conn.execute(
-            "SELECT * FROM bills WHERE id=? AND is_deleted=0",
-            (bid,),
-        ).fetchone()
+        # Read, validate, and record the payment inside one IMMEDIATE
+        # transaction: two concurrent payments can no longer both pass the
+        # balance check and overpay the bill.
+        if not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
 
-        if not bill:
-            return jsonify({"error": "Not found"}), 404
+        try:
+            bill = conn.execute(
+                "SELECT * FROM bills WHERE id=? AND is_deleted=0",
+                (bid,),
+            ).fetchone()
 
-        if bill["status"] == "Void":
-            raise ValidationError("Cannot pay a void bill")
+            if not bill:
+                conn.rollback()
+                return jsonify({"error": "Not found"}), 404
 
-        balance_cents = bill["total_cents"] - bill["paid_cents"]
+            if bill["status"] == "Void":
+                raise ValidationError("Cannot pay a void bill")
 
-        if balance_cents <= 0:
-            raise ValidationError("Bill is already fully paid")
+            balance_cents = bill["total_cents"] - bill["paid_cents"]
 
-        account_id = ensure_reference_exists(
-            get_db(),
-            "accounts",
-            data.get("account_id", bill["account_id"]),
-            "account_id",
-        )
+            if balance_cents <= 0:
+                raise ValidationError("Bill is already fully paid")
 
-        amount_cents = parse_amount_from_data(
-            data,
-            field="amount",
-            default_cents=balance_cents,
-            allow_zero=False,
-        )
+            account_id = ensure_reference_exists(
+                conn,
+                "accounts",
+                data.get("account_id", bill["account_id"]),
+                "account_id",
+            )
 
-        if amount_cents > balance_cents:
-            raise ValidationError("Payment amount cannot exceed remaining balance")
+            amount_cents = parse_amount_from_data(
+                data,
+                field="amount",
+                default_cents=balance_cents,
+                allow_zero=False,
+            )
 
-        payment_date = parse_iso_date(
-            data.get("payment_date", date.today().isoformat()),
-            "payment_date",
-        )
+            if amount_cents > balance_cents:
+                raise ValidationError("Payment amount cannot exceed remaining balance")
 
-        new_paid_cents = bill["paid_cents"] + amount_cents
-        new_status = "Paid" if new_paid_cents >= bill["total_cents"] else "Partially Paid"
-        paid_at = datetime.now(timezone.utc).isoformat() if new_status == "Paid" else bill["paid_at"]
+            payment_date = parse_iso_date(
+                data.get("payment_date", date.today().isoformat()),
+                "payment_date",
+            )
 
-        with conn:
+            new_paid_cents = bill["paid_cents"] + amount_cents
+            new_status = "Paid" if new_paid_cents >= bill["total_cents"] else "Partially Paid"
+            paid_at = datetime.now(timezone.utc).isoformat() if new_status == "Paid" else bill["paid_at"]
+
             conn.execute(
                 """
                 INSERT INTO bill_payments (
@@ -2841,6 +2916,11 @@ def register_routes(app):
                 """,
                 (new_paid_cents, new_status, paid_at, bid),
             )
+
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
         audit("bill_payment_recorded", "bill", bid, str(amount_cents))
 
@@ -2906,6 +2986,9 @@ def register_routes(app):
             "SELECT * FROM bills WHERE is_deleted=0 ORDER BY created_at DESC"
         ).fetchall()
 
+        total_billed_cents = sum(
+            r["total_cents"] for r in rows if r["status"] != "Void"
+        )
         total_paid_cents = sum(
             r["paid_cents"] for r in rows if r["status"] != "Void"
         )
@@ -2937,9 +3020,9 @@ def register_routes(app):
         data_rows.append([])
         data_rows.append([
             "SUMMARY", "", "", "", "", "", "", "", "",
+            cents_to_plain(total_billed_cents),
             cents_to_plain(total_paid_cents),
             cents_to_plain(total_outstanding_cents),
-            "",
             "",
         ])
 
@@ -2983,8 +3066,8 @@ def register_routes(app):
         params = []
 
         if q:
-            like = f"%{q}%"
-            sql += " AND (title LIKE ? OR store LIKE ? OR notes LIKE ? OR member LIKE ? OR tags LIKE ?)"
+            like = f"%{escape_like(q)}%"
+            sql += """ AND (title LIKE ? ESCAPE '\\' OR store LIKE ? ESCAPE '\\' OR notes LIKE ? ESCAPE '\\' OR member LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\')"""
             params.extend([like, like, like, like, like])
 
         if category:
@@ -3066,14 +3149,28 @@ def register_routes(app):
         conn = get_db()
 
         row = conn.execute(
-            "SELECT 1 FROM expenses WHERE id=? AND is_deleted=0",
+            "SELECT * FROM expenses WHERE id=? AND is_deleted=0",
             (eid,),
         ).fetchone()
 
         if not row:
             return jsonify({"error": "Not found"}), 404
 
-        payload = parse_transaction_payload(data, "expense_date")
+        # Merge with existing values so partial updates (e.g. only notes)
+        # don't wipe fields the client omitted.
+        merged = {
+            "title": data.get("title", row["title"]),
+            "amount": data.get("amount", cents_to_float(row["amount_cents"])),
+            "category": data.get("category", row["category"]),
+            "member": data.get("member", row["member"]),
+            "notes": data.get("notes", row["notes"]),
+            "store": data.get("store", row["store"]),
+            "receipt_ref": data.get("receipt_ref", row["receipt_ref"]),
+            "tags": data.get("tags", row["tags"]),
+            "account_id": data.get("account_id", row["account_id"]),
+        }
+        merged.setdefault("expense_date", data.get("expense_date", row["expense_date"]))
+        payload = parse_transaction_payload(merged, "expense_date")
         splits = data.get("splits") or []
 
         if splits and isinstance(splits, list):
@@ -3097,8 +3194,8 @@ def register_routes(app):
                     payload["category"],
                     payload["amount_cents"],
                     payload["date"],
-                    str(data.get("store") or "").strip(),
-                    str(data.get("receipt_ref") or "").strip(),
+                    str(merged.get("store") or "").strip(),
+                    str(merged.get("receipt_ref") or "").strip(),
                     payload["notes"],
                     payload["member"],
                     payload["account_id"],
@@ -3107,8 +3204,10 @@ def register_routes(app):
                 ),
             )
 
-            conn.execute("DELETE FROM expense_splits WHERE expense_id=?", (eid,))
-            if splits and isinstance(splits, list):
+            # Splits are only replaced when the client actually sent them;
+            # a partial update leaves them untouched.
+            if isinstance(splits, list):
+                conn.execute("DELETE FROM expense_splits WHERE expense_id=?", (eid,))
                 for s in splits:
                     conn.execute(
                         """
@@ -3208,8 +3307,8 @@ def register_routes(app):
         params = []
 
         if q:
-            like = f"%{q}%"
-            sql += " AND (title LIKE ? OR source LIKE ? OR notes LIKE ? OR member LIKE ? OR tags LIKE ?)"
+            like = f"%{escape_like(q)}%"
+            sql += """ AND (title LIKE ? ESCAPE '\\' OR source LIKE ? ESCAPE '\\' OR notes LIKE ? ESCAPE '\\' OR member LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\')"""
             params.extend([like, like, like, like, like])
 
         if category:
@@ -3291,14 +3390,27 @@ def register_routes(app):
         conn = get_db()
 
         row = conn.execute(
-            "SELECT 1 FROM income WHERE id=? AND is_deleted=0",
+            "SELECT * FROM income WHERE id=? AND is_deleted=0",
             (iid,),
         ).fetchone()
 
         if not row:
             return jsonify({"error": "Not found"}), 404
 
-        payload = parse_transaction_payload(data, "income_date")
+        # Merge with existing values so partial updates (e.g. only notes)
+        # don't wipe fields the client omitted.
+        merged = {
+            "title": data.get("title", row["title"]),
+            "amount": data.get("amount", cents_to_float(row["amount_cents"])),
+            "category": data.get("category", row["category"]),
+            "member": data.get("member", row["member"]),
+            "notes": data.get("notes", row["notes"]),
+            "source": data.get("source", row["source"]),
+            "tags": data.get("tags", row["tags"]),
+            "account_id": data.get("account_id", row["account_id"]),
+        }
+        merged.setdefault("income_date", data.get("income_date", row["income_date"]))
+        payload = parse_transaction_payload(merged, "income_date")
         splits = data.get("splits") or []
 
         if splits and isinstance(splits, list):
@@ -3322,7 +3434,7 @@ def register_routes(app):
                     payload["category"],
                     payload["amount_cents"],
                     payload["date"],
-                    str(data.get("source") or "").strip(),
+                    str(merged.get("source") or "").strip(),
                     payload["notes"],
                     payload["member"],
                     payload["account_id"],
@@ -3331,8 +3443,10 @@ def register_routes(app):
                 ),
             )
 
-            conn.execute("DELETE FROM income_splits WHERE income_id=?", (iid,))
-            if splits and isinstance(splits, list):
+            # Splits are only replaced when the client actually sent them;
+            # a partial update leaves them untouched.
+            if isinstance(splits, list):
+                conn.execute("DELETE FROM income_splits WHERE income_id=?", (iid,))
                 for s in splits:
                     conn.execute(
                         """
@@ -3497,6 +3611,9 @@ def register_routes(app):
         amount_cents = parse_amount_from_data(data, "amount", allow_zero=False)
 
         with get_db() as conn:
+            if not conn.execute("SELECT 1 FROM budgets WHERE id=?", (bud_id,)).fetchone():
+                return jsonify({"error": "Not found"}), 404
+
             conn.execute(
                 """
                 UPDATE budgets
@@ -3522,6 +3639,9 @@ def register_routes(app):
     @require_roles("Admin", "Editor")
     def budget_delete(bud_id):
         with get_db() as conn:
+            if not conn.execute("SELECT 1 FROM budgets WHERE id=?", (bud_id,)).fetchone():
+                return jsonify({"error": "Not found"}), 404
+
             conn.execute("DELETE FROM budgets WHERE id=?", (bud_id,))
 
         audit("budget_deleted", "budget", bud_id)
@@ -3612,6 +3732,9 @@ def register_routes(app):
         target_date = parse_iso_date(data.get("target_date"), "target_date", allow_none=True)
 
         with get_db() as conn:
+            if not conn.execute("SELECT 1 FROM goals WHERE id=?", (gid,)).fetchone():
+                return jsonify({"error": "Not found"}), 404
+
             conn.execute(
                 """
                 UPDATE goals
@@ -3663,6 +3786,9 @@ def register_routes(app):
     @require_roles("Admin", "Editor")
     def goal_delete(gid):
         with get_db() as conn:
+            if not conn.execute("SELECT 1 FROM goals WHERE id=?", (gid,)).fetchone():
+                return jsonify({"error": "Not found"}), 404
+
             conn.execute("UPDATE goals SET is_active=0 WHERE id=?", (gid,))
 
         audit("goal_deactivated", "goal", gid)
@@ -3698,7 +3824,12 @@ def register_routes(app):
         name = str(data.get("name") or "").strip()
         entity_type = str(data.get("entity_type") or "").strip()
         frequency = str(data.get("frequency") or "monthly").strip()
-        interval_value = int(data.get("interval_value", 1) or 1)
+        interval_value = parse_int(
+            data.get("interval_value", 1),
+            "interval_value",
+            default=1,
+            minimum=1,
+        )
         next_run_date = parse_iso_date(data.get("next_run_date"), "next_run_date")
         payload = data.get("payload") or {}
 
@@ -3710,9 +3841,6 @@ def register_routes(app):
 
         if frequency not in {"daily", "weekly", "monthly", "yearly"}:
             raise ValidationError("Invalid frequency")
-
-        if interval_value <= 0:
-            raise ValidationError("interval_value must be greater than 0")
 
         if not isinstance(payload, dict):
             raise ValidationError("payload must be an object")
@@ -3751,7 +3879,12 @@ def register_routes(app):
         name = str(data.get("name") or "").strip()
         entity_type = str(data.get("entity_type") or "").strip()
         frequency = str(data.get("frequency") or "monthly").strip()
-        interval_value = int(data.get("interval_value", 1) or 1)
+        interval_value = parse_int(
+            data.get("interval_value", 1),
+            "interval_value",
+            default=1,
+            minimum=1,
+        )
         next_run_date = parse_iso_date(data.get("next_run_date"), "next_run_date")
         payload = data.get("payload") or {}
         is_active = 1 if data.get("is_active", True) else 0
@@ -3765,13 +3898,13 @@ def register_routes(app):
         if frequency not in {"daily", "weekly", "monthly", "yearly"}:
             raise ValidationError("Invalid frequency")
 
-        if interval_value <= 0:
-            raise ValidationError("interval_value must be greater than 0")
-
         if not isinstance(payload, dict):
             raise ValidationError("payload must be an object")
 
         with get_db() as conn:
+            if not conn.execute("SELECT 1 FROM recurring_rules WHERE id=?", (rid,)).fetchone():
+                return jsonify({"error": "Not found"}), 404
+
             conn.execute(
                 """
                 UPDATE recurring_rules
@@ -3799,6 +3932,9 @@ def register_routes(app):
     @require_roles("Admin", "Editor")
     def recurring_delete(rid):
         with get_db() as conn:
+            if not conn.execute("SELECT 1 FROM recurring_rules WHERE id=?", (rid,)).fetchone():
+                return jsonify({"error": "Not found"}), 404
+
             conn.execute("DELETE FROM recurring_rules WHERE id=?", (rid,))
 
         audit("recurring_deleted", "recurring", rid)
@@ -3845,19 +3981,27 @@ def register_routes(app):
                         if not isinstance(payload, dict):
                             payload = {}
 
+                        # Date keys are removed up front and re-stamped for
+                        # every iteration, otherwise setdefault() would pin
+                        # every catch-up item to the first occurrence date.
+                        payload.pop("expense_date", None)
+                        payload.pop("income_date", None)
+                        payload.pop("bill_date", None)
+                        payload.pop("due_date", None)
+
                         if rule["entity_type"] == "expense":
-                            payload.setdefault("expense_date", rule["next_run_date"])
+                            payload["expense_date"] = rule["next_run_date"]
                             entity_id = insert_expense(conn, payload)
                             created.append({"rule": rule["name"], "entity_type": "expense", "id": entity_id})
 
                         elif rule["entity_type"] == "income":
-                            payload.setdefault("income_date", rule["next_run_date"])
+                            payload["income_date"] = rule["next_run_date"]
                             entity_id = insert_income(conn, payload)
                             created.append({"rule": rule["name"], "entity_type": "income", "id": entity_id})
 
                         elif rule["entity_type"] == "bill":
-                            payload.setdefault("bill_date", rule["next_run_date"])
-                            payload.setdefault("due_date", rule["next_run_date"])
+                            payload["bill_date"] = rule["next_run_date"]
+                            payload["due_date"] = rule["next_run_date"]
 
                             parsed_bill = parse_bill_payload(payload)
                             settings = load_settings()
@@ -3909,6 +4053,20 @@ def register_routes(app):
                         link="/api/recurring",
                     )
 
+                except Exception as exc:
+                    # Any unexpected error (constraint violation, bad payload
+                    # shape, ...) is contained to this rule so the rest of the
+                    # batch still lands.
+                    conn.execute("ROLLBACK TO SAVEPOINT recurring_rule")
+                    conn.execute("RELEASE SAVEPOINT recurring_rule")
+                    current_app.logger.exception("Recurring rule failed: %s", rule["name"])
+                    failed.append({"rule": rule["name"], "error": str(exc)})
+                    notify(
+                        title=f"Recurring rule failed: {rule['name']}",
+                        body=str(exc),
+                        link="/api/recurring",
+                    )
+
         audit("recurring_run", "recurring", "", f"Created {len(created)} item(s), failed {len(failed)} rule(s)")
 
         return jsonify({
@@ -3926,19 +4084,28 @@ def register_routes(app):
     def notifications_list():
         limit, offset = get_pagination()
         conn = get_db()
+        username = g.user["username"]
 
-        total = conn.execute("SELECT COUNT(*) FROM notifications").fetchone()[0]
+        visible = "(username = '' OR username = ?)"
+
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM notifications WHERE {visible}",
+            (username,),
+        ).fetchone()[0]
+
         unread_count = conn.execute(
-            "SELECT COUNT(*) FROM notifications WHERE is_read=0"
+            f"SELECT COUNT(*) FROM notifications WHERE is_read=0 AND {visible}",
+            (username,),
         ).fetchone()[0]
 
         rows = conn.execute(
-            """
+            f"""
             SELECT * FROM notifications
+            WHERE {visible}
             ORDER BY created_at DESC
             LIMIT ? OFFSET ?
             """,
-            (limit, offset),
+            (username, limit, offset),
         ).fetchall()
 
         return jsonify({
@@ -3954,8 +4121,8 @@ def register_routes(app):
     def notification_mark_read(nid):
         with get_db() as conn:
             conn.execute(
-                "UPDATE notifications SET is_read=1 WHERE id=?",
-                (nid,),
+                "UPDATE notifications SET is_read=1 WHERE id=? AND (username = '' OR username = ?)",
+                (nid, g.user["username"]),
             )
 
         return jsonify({"success": True})
@@ -3964,7 +4131,10 @@ def register_routes(app):
     @api_login_required
     def notifications_mark_all_read():
         with get_db() as conn:
-            conn.execute("UPDATE notifications SET is_read=1")
+            conn.execute(
+                "UPDATE notifications SET is_read=1 WHERE is_read=0 AND (username = '' OR username = ?)",
+                (g.user["username"],),
+            )
 
         return jsonify({"success": True})
 
@@ -4666,7 +4836,7 @@ def register_routes(app):
     @app.get("/api/reports/cash-flow")
     @api_login_required
     def report_cash_flow():
-        months = min(max(int(request.args.get("months", 6)), 1), 24)
+        months = min(max(parse_int(request.args.get("months"), "months", default=6, minimum=1), 1), 24)
 
         conn = get_db()
         current_month_start = date.today().replace(day=1)
@@ -4914,7 +5084,7 @@ def register_routes(app):
     @app.get("/api/reports/forecast")
     @api_login_required
     def report_forecast():
-        months = min(max(int(request.args.get("months", 12)), 1), 36)
+        months = min(max(parse_int(request.args.get("months"), "months", default=12, minimum=1), 1), 36)
         conn = get_db()
 
         accounts = rows_to_list(conn.execute("SELECT * FROM accounts WHERE is_active=1").fetchall())
@@ -4928,17 +5098,17 @@ def register_routes(app):
         m1_ago = (today - timedelta(days=30)).isoformat()
 
         avg_income_cents = conn.execute(
-            "SELECT COALESCE(SUM(amount_cents), 0) / 3 FROM income WHERE is_deleted=0 AND income_date >= ?",
+            "SELECT CAST(COALESCE(SUM(amount_cents), 0) AS FLOAT) / 3.0 FROM income WHERE is_deleted=0 AND income_date >= ?",
             (m3_ago,)
         ).fetchone()[0]
 
         avg_expense_cents = conn.execute(
-            "SELECT COALESCE(SUM(amount_cents), 0) / 3 FROM expenses WHERE is_deleted=0 AND expense_date >= ?",
+            "SELECT CAST(COALESCE(SUM(amount_cents), 0) AS FLOAT) / 3.0 FROM expenses WHERE is_deleted=0 AND expense_date >= ?",
             (m3_ago,)
         ).fetchone()[0]
 
         avg_bill_cents = conn.execute(
-            f"SELECT COALESCE(SUM(bp.amount_cents), 0) / 3 {VALID_BILL_PAYMENT_FROM} WHERE bp.payment_date >= ?",
+            f"SELECT CAST(COALESCE(SUM(bp.amount_cents), 0) AS FLOAT) / 3.0 {VALID_BILL_PAYMENT_FROM} WHERE bp.payment_date >= ?",
             (m3_ago,)
         ).fetchone()[0]
 
@@ -5109,6 +5279,9 @@ def register_routes(app):
         amount_cents = parse_amount_from_data(data, "amount", allow_zero=False)
 
         with get_db() as conn:
+            if not conn.execute("SELECT 1 FROM allowances WHERE id=?", (alid,)).fetchone():
+                return jsonify({"error": "Not found"}), 404
+
             conn.execute(
                 """
                 UPDATE allowances
@@ -5125,6 +5298,9 @@ def register_routes(app):
     @require_roles("Admin", "Editor")
     def allowance_delete(alid):
         with get_db() as conn:
+            if not conn.execute("SELECT 1 FROM allowances WHERE id=?", (alid,)).fetchone():
+                return jsonify({"error": "Not found"}), 404
+
             conn.execute("DELETE FROM allowances WHERE id=?", (alid,))
         audit("allowance_deleted", "allowance", alid)
         return jsonify({"success": True})
@@ -5135,7 +5311,7 @@ def register_routes(app):
         if "file" not in request.files:
             raise ValidationError("CSV file is required in form under field 'file'")
         file = request.files["file"]
-        if not file.filename.endswith(".csv"):
+        if not file.filename or not file.filename.endswith(".csv"):
             raise ValidationError("Uploaded file must be a .csv file")
 
         content = file.read().decode("utf-8-sig", errors="replace")
@@ -5208,7 +5384,7 @@ def register_routes(app):
         if "file" not in request.files:
             raise ValidationError("Backup file is required in form under field 'file'")
         file = request.files["file"]
-        if not file.filename.endswith(".db"):
+        if not file.filename or not file.filename.endswith(".db"):
             raise ValidationError("Uploaded file must be a SQLite .db file")
 
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
@@ -5306,8 +5482,8 @@ def register_routes(app):
         where = "WHERE 1=1"
         params = []
         if action_filter:
-            where += " AND action LIKE ?"
-            params.append(f"%{action_filter}%")
+            where += " AND action LIKE ? ESCAPE '\\'"
+            params.append(f"%{escape_like(action_filter)}%")
 
         total = conn.execute(f"SELECT COUNT(*) FROM audit_logs {where}", params).fetchone()[0]
 
@@ -5334,7 +5510,9 @@ def register_routes(app):
 # ---------------------------------------------------------------------------
 
 def generate_print_bill(b, items, s):
-    sym = s.get("currency_symbol", "$")
+    # Settings are admin-editable and stored raw, so they must be escaped
+    # before being interpolated into the print view.
+    sym = html.escape(str(s.get("currency_symbol", "$")))
 
     status_colors = {
         "Pending": "#f59e0b",
@@ -5489,7 +5667,7 @@ def generate_print_bill(b, items, s):
 
     <div>
       <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:#94a3b8;margin-bottom:8px;">Currency</div>
-      <div style="color:#475569;line-height:1.7;">{s.get('currency_code','USD')} — {s.get('currency_symbol','$')}</div>
+      <div style="color:#475569;line-height:1.7;">{html.escape(str(s.get('currency_code','USD')))} — {sym}</div>
     </div>
   </div>
 

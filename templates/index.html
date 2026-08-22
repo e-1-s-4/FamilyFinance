@@ -26,6 +26,16 @@
     --rust-pale: #F5E3DC;
     --blue: #2E5C8A;
     --blue-pale: #E4EBF3;
+    --chart-1: #1F4B3F;
+    --chart-2: #A97A2C;
+    --chart-3: #2E5C8A;
+    --chart-4: #9C3F2E;
+    --chart-5: #6B8F71;
+    --chart-6: #C79A4B;
+    --chart-7: #7E9BB8;
+    --chart-8: #B57160;
+    --chart-9: #4E7566;
+    --chart-10: #D6B27A;
     --shadow-sm: 0 1px 2px rgba(28,36,32,.05);
     --shadow: 0 1px 2px rgba(28,36,32,.04), 0 10px 28px rgba(28,36,32,.07);
     --radius: 14px;
@@ -54,6 +64,16 @@
     --rust-pale: #34211D;
     --blue: #8FB2DE;
     --blue-pale: #1C2634;
+    --chart-1: #63BC9E;
+    --chart-2: #E0B160;
+    --chart-3: #8FB2DE;
+    --chart-4: #E2937C;
+    --chart-5: #86D3B9;
+    --chart-6: #EDCB85;
+    --chart-7: #A9C6EA;
+    --chart-8: #EBB09F;
+    --chart-9: #7FB89F;
+    --chart-10: #E8CBA0;
     --shadow-sm: 0 1px 2px rgba(0,0,0,.3);
     --shadow: 0 1px 2px rgba(0,0,0,.3), 0 10px 28px rgba(0,0,0,.45);
     color-scheme: dark;
@@ -614,6 +634,7 @@
   tbody tr:last-child td { border-bottom: none; }
 
   .right { text-align: right; }
+  .font-bold { font-weight: 700; }
   .center { text-align: center; }
 
   .row-actions, .action-row { display: flex; gap: 6px; justify-content: flex-end; align-items: center; flex-wrap: wrap; }
@@ -627,13 +648,27 @@
   .empty-state .ic { font-size: 30px; margin-bottom: 10px; opacity: .7; }
   .empty-state .t { font-weight: 600; color: var(--ink-soft); margin-bottom: 4px; }
 
-  .skeleton-row td {
+  .skeleton-row td, .skeleton-row > span {
     background: linear-gradient(90deg, var(--line-soft) 25%, var(--paper-alt) 37%, var(--line-soft) 63%);
     background-size: 400% 100%;
     animation: shimmer 1.4s ease infinite;
     height: 18px;
     border-radius: 4px;
   }
+
+  .loading-block { padding: 10px 4px; }
+  .loading-block span {
+    display: block;
+    height: 15px;
+    border-radius: 6px;
+    margin: 12px 0;
+    background: linear-gradient(90deg, var(--line-soft) 25%, var(--paper-alt) 37%, var(--line-soft) 63%);
+    background-size: 400% 100%;
+    animation: shimmer 1.4s ease infinite;
+  }
+  .loading-block span:nth-child(2) { width: 82%; }
+  .loading-block span:nth-child(3) { width: 68%; }
+  .loading-block span:nth-child(4) { width: 90%; }
   @keyframes shimmer { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
 
   .pagination {
@@ -1000,7 +1035,7 @@
             <div class="user-avatar" id="userAvatar">?</div>
             <div>
               <div class="name" id="userName">—</div>
-              <div class="role" id="userRole">—</div>
+              <div class="role" id="headerUserRole">—</div>
             </div>
           </div>
           <div class="popover hidden" id="userMenu" style="width:200px;">
@@ -1397,7 +1432,7 @@
 </div>
 
 <div id="modalRoot"></div>
-<div class="toast-stack" id="toastStack"></div>
+<div class="toast-stack" id="toastStack" role="status" aria-live="polite"></div>
 
 <script>
 "use strict";
@@ -1542,11 +1577,23 @@ function toast(message, type = "info") {
   const icon = type === "success" ? "✓" : type === "error" ? "✕" : "ℹ";
   el.innerHTML = `<span>${icon}</span><span>${escapeHtml(message)}</span>`;
   stack.appendChild(el);
+  // Any toast means the in-flight operation finished — release the
+  // double-submit lock so forms stay usable.
+  unlockBusyForms();
   setTimeout(() => {
     el.style.transition = "opacity .2s ease";
     el.style.opacity = "0";
     setTimeout(() => el.remove(), 220);
   }, 3600);
+}
+
+// Re-enable buttons locked by the double-submit guard (called when an
+// operation fails so the user can retry immediately).
+function unlockBusyForms() {
+  document.querySelectorAll('form[data-busy="1"]').forEach((form) => {
+    delete form.dataset.busy;
+    form.querySelectorAll("button").forEach((b) => { try { b.disabled = false; } catch (e) {} });
+  });
 }
 
 async function apiAction(promiseFn, successMsg) {
@@ -1570,9 +1617,9 @@ function openModal({ title, bodyHtml, footHtml, wide, onClose }) {
   overlay.className = "modal-overlay";
   overlay.id = "activeModalOverlay";
   overlay.innerHTML = `
-    <div class="modal ${wide ? "wide" : ""}" role="dialog" aria-modal="true">
+    <div class="modal ${wide ? "wide" : ""}" role="dialog" aria-modal="true" aria-label="${escapeHtml(String(title ?? ""))}">
       <div class="modal-head">
-        <h3>${title}</h3>
+        <h3>${escapeHtml(String(title ?? ""))}</h3>
         <button class="icon-btn" onclick="closeModal()" aria-label="Close">✕</button>
       </div>
       <div class="modal-body">${bodyHtml}</div>
@@ -1582,9 +1629,27 @@ function openModal({ title, bodyHtml, footHtml, wide, onClose }) {
   overlay.addEventListener("mousedown", (e) => {
     if (e.target === overlay) closeModal();
   });
+  // Keep keyboard focus inside the dialog while it is open.
+  overlay.addEventListener("keydown", (e) => {
+    if (e.key !== "Tab") return;
+    const focusables = [...overlay.querySelectorAll("button, input, select, textarea, a[href]")]
+      .filter((el) => !el.disabled && el.offsetParent !== null);
+    if (!focusables.length) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  });
   document.addEventListener("keydown", modalEscHandler);
   $("modalRoot").appendChild(overlay);
   overlay._onClose = onClose;
+  // Restore focus to the trigger element when the dialog closes.
+  overlay._previouslyFocused = document.activeElement;
   const firstInput = overlay.querySelector("input, select, textarea");
   if (firstInput) setTimeout(() => firstInput.focus(), 30);
 }
@@ -1597,6 +1662,9 @@ function closeModal() {
   const overlay = $("activeModalOverlay");
   if (overlay) {
     if (typeof overlay._onClose === "function") overlay._onClose();
+    if (overlay._previouslyFocused && document.contains(overlay._previouslyFocused)) {
+      try { overlay._previouslyFocused.focus(); } catch (e) { /* ignore */ }
+    }
     overlay.remove();
   }
   document.removeEventListener("keydown", modalEscHandler);
@@ -1642,6 +1710,10 @@ function toggleTheme() {
   const next = html.getAttribute("data-theme") === "dark" ? "light" : "dark";
   html.setAttribute("data-theme", next);
   try { localStorage.setItem("ff_theme", next); } catch (e) {}
+  // Charts read their colors from CSS variables at render time, so the
+  // current view needs a re-render for existing charts to pick up the new
+  // palette.
+  if (state.user && typeof showTab === "function") showTab(currentTab, { fromHash: true });
 }
 
 function enhanceResponsiveTables(root = document) {
@@ -1695,6 +1767,10 @@ document.addEventListener("click", (e) => {
   if (!e.target.closest(".popover-wrap")) closeAllPopovers();
 });
 
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("activeModalOverlay")) closeAllPopovers();
+});
+
 /* =========================================================================
    NAVIGATION
    ========================================================================= */
@@ -1721,7 +1797,7 @@ const TAB_META = {
 
 let currentTab = "dashboard";
 
-function showTab(name) {
+function showTab(name, opts) {
   if (!TAB_META[name]) name = "dashboard";
   currentTab = name;
 
@@ -1734,6 +1810,11 @@ function showTab(name) {
   $(`tab-${name}`).classList.remove("hidden");
 
   closeSidebar();
+
+  // Keep the URL hash in sync so refresh/back-forward restores the view.
+  if (!(opts && opts.fromHash)) {
+    try { history.replaceState(null, "", `#${name}`); } catch (e) { /* ignore */ }
+  }
 
   const loaders = {
     dashboard: loadDashboard,
@@ -1758,6 +1839,11 @@ function showTab(name) {
   if (loaders[name]) loaders[name]();
 }
 
+window.addEventListener("hashchange", () => {
+  // Ignore hash changes while logged out; showApp drives the initial route.
+  if (state.user) showTab(location.hash.replace("#", "") || "dashboard", { fromHash: true });
+});
+
 const debouncedReload = debounce((entity) => {
   const loaders = { expenses: loadExpenses, income: loadIncome, bills: loadBills, payees: loadPayees };
   if (loaders[entity]) loaders[entity](0);
@@ -1767,6 +1853,13 @@ const debouncedReload = debounce((entity) => {
    PAGINATION HELPER
    ========================================================================= */
 
+function setLoading(el, rows = 4) {
+  if (!el) return;
+  el.innerHTML = `<div class="loading-block" aria-busy="true">${Array.from({ length: rows })
+    .map(() => `<span></span>`)
+    .join("")}</div>`;
+}
+
 function renderPagination(el, total, limit, offset, onPage) {
   if (total <= limit) { el.innerHTML = ""; return; }
   const start = total === 0 ? 0 : offset + 1;
@@ -1774,12 +1867,12 @@ function renderPagination(el, total, limit, offset, onPage) {
   el.innerHTML = `
     <span>Showing ${start}–${end} of ${total}</span>
     <span style="display:flex;gap:8px;">
-      <button class="btn secondary small" ${offset <= 0 ? "disabled" : ""} id="pagPrevBtn">← Prev</button>
-      <button class="btn secondary small" ${end >= total ? "disabled" : ""} id="pagNextBtn">Next →</button>
+      <button class="btn secondary small" ${offset <= 0 ? "disabled" : ""} data-pag="prev">← Prev</button>
+      <button class="btn secondary small" ${end >= total ? "disabled" : ""} data-pag="next">Next →</button>
     </span>
   `;
-  const prevBtn = qs("#pagPrevBtn", el);
-  const nextBtn = qs("#pagNextBtn", el);
+  const prevBtn = qs('[data-pag="prev"]', el);
+  const nextBtn = qs('[data-pag="next"]', el);
   if (prevBtn) prevBtn.onclick = () => onPage(Math.max(0, offset - limit));
   if (nextBtn) nextBtn.onclick = () => onPage(offset + limit);
 }
@@ -1852,7 +1945,7 @@ async function changePassword(event) {
 function renderUserChip() {
   if (!state.user) return;
   $("userName").textContent = state.user.username;
-  $("userRole").textContent = state.user.role;
+  $("headerUserRole").textContent = state.user.role;
   $("userAvatar").textContent = state.user.username.slice(0, 1).toUpperCase();
   applyRoleGates();
 }
@@ -1861,7 +1954,8 @@ async function afterAuth() {
   renderUserChip();
   showApp();
   await loadAllCaches();
-  showTab("dashboard");
+  const initial = location.hash.replace("#", "");
+  showTab(TAB_META[initial] ? initial : "dashboard", { fromHash: true });
   refreshNotifBadge();
   if (state.notifTimer) clearInterval(state.notifTimer);
   state.notifTimer = setInterval(refreshNotifBadge, 60000);
@@ -1880,6 +1974,28 @@ async function bootstrap() {
 }
 
 $("loginForm").addEventListener("submit", login);
+
+// Double-submit guard: while a form is submitting, disable its buttons so a
+// slow connection cannot trigger duplicate creates. Buttons are re-enabled
+// automatically (failsafe timer) or when the modal closes.
+document.addEventListener("submit", (e) => {
+  const form = e.target;
+  if (!(form instanceof HTMLFormElement) || form.dataset.busy === "1") return;
+  const scope = form.closest(".modal-overlay") || form;
+  const buttons = [...scope.querySelectorAll("button:not(.icon-btn)")];
+  if (!buttons.length) return;
+  form.dataset.busy = "1";
+  buttons.forEach((b) => { b.disabled = true; });
+  const unlock = () => {
+    delete form.dataset.busy;
+    buttons.forEach((b) => {
+      try { b.disabled = false; } catch (err) { /* detached */ }
+    });
+  };
+  // Failsafe: never leave a form locked for more than 15s (modal close on
+  // success is the normal unlock path).
+  setTimeout(unlock, 15000);
+}, true);
 
 
 /* =========================================================================
@@ -2042,7 +2158,16 @@ function donutChart(data, opts) {
   return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}">${paths}</svg>`;
 }
 
-const CHART_PALETTE = ["#1F4B3F", "#A97A2C", "#2E5C8A", "#9C3F2E", "#6B8F71", "#C79A4B", "#7E9BB8", "#B57160", "#4E7566", "#D6B27A"];
+// Theme-aware chart palette: colors resolve from CSS custom properties so
+// charts automatically adapt when the user switches light/dark themes.
+const CHART_COLOR_VARS = [
+  "--chart-1", "--chart-2", "--chart-3", "--chart-4", "--chart-5",
+  "--chart-6", "--chart-7", "--chart-8", "--chart-9", "--chart-10",
+];
+
+function chartPalette() {
+  return CHART_COLOR_VARS.map((v) => cssVar(v) || "#888");
+}
 
 function chartLegend(items) {
   return `<div class="chart-legend">${items.map((it) => `
@@ -2058,7 +2183,7 @@ function chartLegend(items) {
 async function loadDashboard() {
   const grid = $("dashboardStats");
   grid.innerHTML = Array.from({ length: 4 }).map(() => `
-    <div class="card stat-card"><div class="skeleton-row"><td style="display:block;height:40px;"></td></div></div>
+    <div class="card stat-card"><div class="skeleton-row" style="display:block;"><span style="display:block;height:12px;width:45%;"></span><span style="display:block;height:28px;width:70%;margin-top:10px;"></span></div></div>
   `).join("");
 
   let data;
@@ -2088,16 +2213,17 @@ async function loadDashboard() {
   const cfData = data.monthly.map((m) => ({
     label: m.month,
     values: [
-      { key: "Income", value: m.income, color: CHART_PALETTE[0] },
-      { key: "Outflow", value: m.expenses, color: CHART_PALETTE[3] },
+      { key: "Income", value: m.income, color: chartPalette()[0] },
+      { key: "Outflow", value: m.expenses, color: chartPalette()[3] },
     ],
   }));
   $("dashboardCashflowChart").innerHTML = groupedBarChart(cfData, { height: 200 }) +
-    chartLegend([{ label: "Income", color: CHART_PALETTE[0] }, { label: "Outflow", color: CHART_PALETTE[3] }]);
+    chartLegend([{ label: "Income", color: chartPalette()[0] }, { label: "Outflow", color: chartPalette()[3] }]);
 
   // Top categories donut
   if (data.top_cats.length) {
-    const catData = data.top_cats.map((c, i) => ({ label: c.category, value: c.total, color: CHART_PALETTE[i % CHART_PALETTE.length] }));
+    const palette = chartPalette();
+    const catData = data.top_cats.map((c, i) => ({ label: c.category, value: c.total, color: palette[i % palette.length] }));
     $("dashboardTopCats").innerHTML = `
       <div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap;">
         ${donutChart(catData, { size: 150 })}
@@ -2182,6 +2308,7 @@ function simpleMiniTable(rows, cols) {
 const expensesState = { limit: 25, offset: 0 };
 
 async function loadExpenses(offset) {
+  setLoading($("expensesTable"), 6);
   if (typeof offset === "number") expensesState.offset = offset;
   fillCategoryFilterSelect($("expensesCategoryFilter"), "expense");
   fillMemberFilterSelect($("expensesMemberFilter"));
@@ -2347,6 +2474,7 @@ function confirmDeleteExpense(id) {
 const incomeState = { limit: 25, offset: 0 };
 
 async function loadIncome(offset) {
+  setLoading($("incomeTable"), 6);
   if (typeof offset === "number") incomeState.offset = offset;
   fillCategoryFilterSelect($("incomeCategoryFilter"), "income");
   fillMemberFilterSelect($("incomeMemberFilter"));
@@ -2463,8 +2591,17 @@ function confirmDeleteIncome(id) {
   });
 }
 
+function triggerDownload(url, filename) {
+  const a = document.createElement("a");
+  a.href = url;
+  if (filename) a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
 function exportEntity(entity) {
-  window.open(`/api/${entity}/export`, "_blank");
+  triggerDownload(`/api/${entity}/export`, `${entity}.csv`);
 }
 
 
@@ -2481,6 +2618,7 @@ function billStatusPill(status) {
 }
 
 async function loadBills(offset) {
+  setLoading($("billsTable"), 6);
   if (typeof offset === "number") billsState.offset = offset;
   fillCategoryFilterSelect($("billsCategoryFilter"), "bill");
 
@@ -2536,7 +2674,10 @@ async function loadBills(offset) {
   renderPagination($("billsPagination"), data.total, data.limit, data.offset, loadBills);
 }
 
-function printBill(id) { window.open(`/api/bills/${id}/print`, "_blank"); }
+function printBill(id) {
+  const win = window.open(`/api/bills/${id}/print`, "_blank");
+  if (!win) toast("Popup blocked — allow popups to print bills", "error");
+}
 
 let billItemSeq = 0;
 
@@ -2779,6 +2920,7 @@ function confirmDeleteBill(id) {
    ========================================================================= */
 
 async function loadBudgets() {
+  setLoading($("budgetsList"));
   const period = $("budgetsPeriodFilter").value;
   $("budgetsMonth").classList.toggle("hidden", period !== "monthly");
   if (!$("budgetsMonth").value) $("budgetsMonth").value = todayIso().slice(0, 7);
@@ -2893,11 +3035,16 @@ function confirmDeleteBudget(id) {
    GOALS
    ========================================================================= */
 
+let goalsCache = [];
+
 async function loadGoals() {
+  setLoading($("goalsList"));
   let goals;
   try {
     goals = await api("/api/goals");
   } catch (err) { toast(err.message, "error"); return; }
+
+  goalsCache = goals;
 
   if (!goals.length) {
     $("goalsList").innerHTML = `<div class="empty-state"><div class="ic">◎</div><div class="t">No savings goals yet</div><button class="btn small" onclick="openGoalModal()">Create your first goal →</button></div>`;
@@ -2917,7 +3064,7 @@ async function loadGoals() {
       <div style="margin:14px 0 6px;font-size:13px;" class="muted num">${fmtMoney(g.current, { plain: true })} of ${fmtMoney(g.target, { plain: true })}</div>
       <div class="progress-track"><div class="progress-fill" style="width:${Math.min(100, g.progress_pct)}%;"></div></div>
       <div class="field-hint" style="margin-top:6px;">${g.progress_pct}% funded</div>
-      <button class="btn secondary small role-gate" data-role="Admin,Editor" style="margin-top:12px;" onclick="openContributeModal(${g.id}, '${escapeHtml(g.name).replace(/'/g, "\\'")}')">+ Contribute</button>
+      <button class="btn secondary small role-gate" data-role="Admin,Editor" style="margin-top:12px;" onclick="openContributeModal(${g.id})">+ Contribute</button>
     </div>
   `).join("") + `</div>`;
 
@@ -2972,9 +3119,10 @@ async function saveGoal(event, id) {
   }
 }
 
-function openContributeModal(id, name) {
+function openContributeModal(id) {
+  const goal = goalsCache.find((g) => g.id === id) || {};
   openModal({
-    title: `Contribute to "${name}"`,
+    title: `Contribute to "${goal.name || "Goal"}"`,
     bodyHtml: `
       <form id="contributeForm" onsubmit="submitContribute(event, ${id})">
         <div class="field"><label>Amount *</label><input id="contribAmount" type="number" step="0.01" min="0.01" required autofocus /></div>
@@ -3009,6 +3157,7 @@ function confirmDeleteGoal(id) {
    ========================================================================= */
 
 async function loadRecurring() {
+  setLoading($("recurringTable"));
   let items;
   try {
     items = await api("/api/recurring");
@@ -3225,20 +3374,22 @@ async function loadReportsOverview() {
     data = await api(`/api/reports?year=${year}`);
   } catch (err) { toast(err.message, "error"); return; }
 
-  if (yearSelect.options.length === 0) {
-    yearSelect.innerHTML = data.available_years.map((y) => `<option value="${y}" ${y === year ? "selected" : ""}>${y}</option>`).join("");
+  if (yearSelect.options.length === 0 || !data.available_years.map(String).includes(yearSelect.value)) {
+    const selected = yearSelect.value;
+    yearSelect.innerHTML = data.available_years.map((y) => `<option value="${y}" ${String(y) === (selected || year) ? "selected" : ""}>${y}</option>`).join("");
   }
 
   const cfData = data.monthly.map((m) => ({
     label: m.month,
     values: [
-      { key: "Income", value: m.income, color: CHART_PALETTE[0] },
-      { key: "Expenses", value: m.expenses, color: CHART_PALETTE[3] },
+      { key: "Income", value: m.income, color: chartPalette()[0] },
+      { key: "Expenses", value: m.expenses, color: chartPalette()[3] },
     ],
   }));
 
-  const expenseCatData = data.expense_cats.map((c, i) => ({ label: c.category, value: c.total, color: CHART_PALETTE[i % CHART_PALETTE.length] }));
-  const incomeCatData = data.income_cats.map((c, i) => ({ label: c.category, value: c.total, color: CHART_PALETTE[i % CHART_PALETTE.length] }));
+  const palette = chartPalette();
+  const expenseCatData = data.expense_cats.map((c, i) => ({ label: c.category, value: c.total, color: palette[i % palette.length] }));
+  const incomeCatData = data.income_cats.map((c, i) => ({ label: c.category, value: c.total, color: palette[i % palette.length] }));
 
   $("report-overview").innerHTML = `
     <div class="grid cols-4">
@@ -3250,7 +3401,7 @@ async function loadReportsOverview() {
 
     <div class="card section">
       <div class="card-head"><h3>Income vs. Expenses — ${year}</h3></div>
-      <div class="card-pad">${groupedBarChart(cfData, { height: 240 })}${chartLegend([{ label: "Income", color: CHART_PALETTE[0] }, { label: "Expenses", color: CHART_PALETTE[3] }])}</div>
+      <div class="card-pad">${groupedBarChart(cfData, { height: 240 })}${chartLegend([{ label: "Income", color: chartPalette()[0] }, { label: "Expenses", color: chartPalette()[3] }])}</div>
     </div>
 
     <div class="grid cols-2 section">
@@ -3295,9 +3446,16 @@ function reportCatBreakdown(catData) {
 
 async function loadReportBudget() {
   const year = $("reportsYearFilter").value || todayIso().slice(0, 4);
+  // Keep the monthly pane consistent with the selected year instead of
+  // always using the current one.
+  const monthNum = todayIso().slice(5, 7);
+  const monthStr = `${year}-${monthNum}`;
+  const monthLabel = year === todayIso().slice(0, 4)
+    ? "This Month"
+    : new Date(Number(year), Number(monthNum) - 1, 1).toLocaleString("en", { month: "long" }) + ` ${year}`;
   let monthly, yearly;
   try {
-    monthly = await api(`/api/reports/budget?period=monthly&month=${todayIso().slice(0, 7)}`);
+    monthly = await api(`/api/reports/budget?period=monthly&month=${monthStr}`);
     yearly = await api(`/api/reports/budget?period=yearly&year=${year}`);
   } catch (err) { toast(err.message, "error"); return; }
 
@@ -3318,7 +3476,7 @@ async function loadReportBudget() {
   $("report-budget").innerHTML = `
     <div class="grid cols-2">
       <div class="card">
-        <div class="card-head"><h3>This Month</h3></div>
+        <div class="card-head"><h3>${escapeHtml(monthLabel)}</h3></div>
         <div class="card-pad">${renderList(monthly.items)}</div>
       </div>
       <div class="card">
@@ -3338,15 +3496,15 @@ async function loadReportCashflow() {
   const cfData = data.map((m) => ({
     label: m.month.slice(5),
     values: [
-      { key: "Income", value: m.income, color: CHART_PALETTE[0] },
-      { key: "Outflow", value: m.outflow, color: CHART_PALETTE[3] },
+      { key: "Income", value: m.income, color: chartPalette()[0] },
+      { key: "Outflow", value: m.outflow, color: chartPalette()[3] },
     ],
   }));
 
   $("report-cashflow").innerHTML = `
     <div class="card">
       <div class="card-head"><h3>12-Month Cash Flow</h3></div>
-      <div class="card-pad">${groupedBarChart(cfData, { height: 260, width: 900 })}${chartLegend([{ label: "Income", color: CHART_PALETTE[0] }, { label: "Outflow", color: CHART_PALETTE[3] }])}</div>
+      <div class="card-pad">${groupedBarChart(cfData, { height: 260, width: 900 })}${chartLegend([{ label: "Income", color: chartPalette()[0] }, { label: "Outflow", color: chartPalette()[3] }])}</div>
     </div>
     <div class="card section">
       <div class="table-wrap">
@@ -3500,7 +3658,9 @@ function accountFormHtml(item) {
           ${["Checking", "Savings", "Cash", "Investment", "Credit Card", "Loan", "Other"].map((t) => `<option value="${t}" ${(item.account_type || "Checking") === t ? "selected" : ""}>${t}</option>`).join("")}
         </select>
       </div>
-      <div class="field full"><label>${item.id ? "Opening Balance (read-only reference)" : "Opening Balance"} *</label><input id="accOpening" type="number" step="0.01" ${item.id ? "" : "required"} value="${item.opening_balance ?? 0}" /></div>
+      ${item.id
+        ? `<div class="field full"><label>Opening Balance (fixed at creation)</label><input type="text" disabled value="${item.opening_balance ?? 0}" /><div class="field-hint">The opening balance can't be edited after creation — balances move through transactions instead.</div></div>`
+        : `<div class="field full"><label>Opening Balance *</label><input id="accOpening" type="number" step="0.01" required value="0" /></div>`}
       <div class="field full"><label>Notes</label><textarea id="accNotes">${escapeHtml(item.notes || "")}</textarea></div>
     </form>
   `;
@@ -3553,6 +3713,7 @@ function confirmDeleteAccount(id) {
 const payeesState = { limit: 25, offset: 0 };
 
 async function loadPayees(offset) {
+  setLoading($("payeesTable"), 5);
   if (typeof offset === "number") payeesState.offset = offset;
   const params = new URLSearchParams({ limit: payeesState.limit, offset: payeesState.offset, q: $("payeesSearch").value.trim() });
   [...params.keys()].forEach((k) => { if (!params.get(k)) params.delete(k); });
@@ -3649,6 +3810,7 @@ function confirmDeletePayee(id) {
    ========================================================================= */
 
 async function loadMembers() {
+  setLoading($("membersTable"), 4);
   let items;
   try {
     items = await api("/api/members");
@@ -3742,11 +3904,16 @@ function showCategoryTab(type) {
   loadCategories();
 }
 
+let categoriesCache = [];
+
 async function loadCategories() {
+  setLoading($("categoriesTable"));
   let items;
   try {
     items = await api(`/api/categories?type=${currentCategoryType}&active_only=0`);
   } catch (err) { toast(err.message, "error"); return; }
+
+  categoriesCache = items;
 
   $("categoriesTable").innerHTML = items.length ? `
     <table>
@@ -3759,7 +3926,7 @@ async function loadCategories() {
             <td>
               <div class="row-actions">
                 <button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="toggleCategoryActive(${c.id}, ${c.is_active ? 0 : 1})">${c.is_active ? "Deactivate" : "Activate"}</button>
-                <button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="openCategoryModal(${c.id}, '${escapeHtml(c.name).replace(/'/g, "\\'")}')">Rename</button>
+                <button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="openCategoryModal(${c.id})">Rename</button>
                 <button class="btn ghost small role-gate" data-role="Admin" onclick="confirmDeleteCategory(${c.id})">Delete</button>
               </div>
             </td>
@@ -3773,6 +3940,10 @@ async function loadCategories() {
 }
 
 function openCategoryModal(id, currentName) {
+  if (id && currentName === undefined) {
+    const found = categoriesCache.find((c) => c.id === id);
+    currentName = found ? found.name : "";
+  }
   openModal({
     title: id ? "Rename Category" : "Add Category",
     bodyHtml: `
@@ -3853,7 +4024,7 @@ async function loadNotifications() {
 
   const items = data.items || [];
   $("notifList").innerHTML = items.length ? items.map((n) => `
-    <div class="notif-item ${n.is_read ? "" : "unread"}" onclick="markNotificationRead(${n.id})">
+    <div class="notif-item ${n.is_read ? "" : "unread"}" role="${n.is_read ? "" : "button"}" tabindex="${n.is_read ? -1 : 0}" ${n.is_read ? "" : `aria-label="Mark '${escapeHtml(n.title)}' as read"`} onclick="markNotificationRead(${n.id})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();markNotificationRead(${n.id});}">
       <div class="t">${escapeHtml(n.title)}</div>
       <div class="b">${escapeHtml(n.body || "")}</div>
       <div class="d">${fmtDateTime(n.created_at)}</div>
@@ -3896,7 +4067,7 @@ async function loadSettingsView() {
   $("settingsPhone").value = data.primary_phone || "";
   $("settingsCurrencySymbol").value = data.currency_symbol || "$";
   $("settingsCurrencyCode").value = data.currency_code || "USD";
-  $("settingsBillPrefix").value = data.bill_number_prefix || "";
+  $("settingsBillPrefix").value = data.bill_prefix || "";
   $("settingsMonthlyIncomeGoal").value = data.monthly_income_goal ?? "";
   $("settingsSavingsTargetPct").value = data.savings_target_pct ?? "";
   $("settingsFamilyAddress").value = data.family_address || "";
@@ -3914,7 +4085,7 @@ async function saveSettings(event) {
     primary_phone: $("settingsPhone").value,
     currency_symbol: $("settingsCurrencySymbol").value,
     currency_code: $("settingsCurrencyCode").value,
-    bill_number_prefix: $("settingsBillPrefix").value,
+    bill_prefix: $("settingsBillPrefix").value,
     monthly_income_goal: $("settingsMonthlyIncomeGoal").value || 0,
     savings_target_pct: $("settingsSavingsTargetPct").value || 0,
     family_address: $("settingsFamilyAddress").value,
@@ -3941,6 +4112,7 @@ function roleBadge(role) {
 }
 
 async function loadUsers() {
+  setLoading($("usersTable"));
   try {
     usersCache = await api("/api/users");
   } catch (err) {
@@ -3960,7 +4132,7 @@ async function loadUsers() {
             <td>
               <div class="row-actions">
                 <button class="btn ghost small" onclick="openUserModal(${u.id})">Edit</button>
-                ${u.username === state.user.username ? "" : `<button class="btn ghost small" onclick="confirmDeleteUser(${u.id}, '${escapeHtml(u.username).replace(/'/g, "\\'")}')">Delete</button>`}
+                ${u.username === state.user.username ? "" : `<button class="btn ghost small" onclick="confirmDeleteUser(${u.id})">Delete</button>`}
               </div>
             </td>
           </tr>
@@ -4024,8 +4196,9 @@ async function saveUser(event, id) {
   }
 }
 
-function confirmDeleteUser(id, username) {
-  confirmModal(`Remove "${username}" from your household users? They'll no longer be able to sign in.`, async () => {
+function confirmDeleteUser(id) {
+  const user = usersCache.find((u) => u.id === id) || {};
+  confirmModal(`Remove "${user.username || "this user"}" from your household users? They'll no longer be able to sign in.`, async () => {
     await apiAction(() => api(`/api/users/${id}`, "DELETE"), "User removed");
     loadUsers();
   });
@@ -4063,7 +4236,8 @@ async function loadAudit(offset) {
 }
 
 function downloadBackup() {
-  window.open("/api/admin/backup", "_blank");
+  triggerDownload("/api/admin/backup", `familyfinance-backup-${new Date().toISOString().slice(0, 10)}.db`);
+  toast("Backup download started", "info");
 }
 
 /* =========================================================================
@@ -4098,20 +4272,22 @@ async function loadDebtPayoff() {
         <div style="font-size:14px;">Total Interest Paid: <strong>${fmtMoney(av.total_interest, { plain: true })}</strong></div>
       </div>
     </div>
-    <table class="table">
-      <thead><tr><th>Debt Account</th><th>Type</th><th>Balance</th><th>Interest Rate</th><th>Min. Payment</th></tr></thead>
-      <tbody>
-        ${data.debts.map((d) => `
-          <tr>
-            <td>${escapeHtml(d.name)}</td>
-            <td>${escapeHtml(d.account_type)}</td>
-            <td class="amt-neg">${fmtMoney(d.balance, { plain: true })}</td>
-            <td>${d.interest_rate}%</td>
-            <td>${fmtMoney(d.minimum_payment, { plain: true })}</td>
-          </tr>
-        `).join("")}
-      </tbody>
-    </table>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Debt Account</th><th>Type</th><th>Balance</th><th>Interest Rate</th><th>Min. Payment</th></tr></thead>
+        <tbody>
+          ${data.debts.map((d) => `
+            <tr>
+              <td>${escapeHtml(d.name)}</td>
+              <td>${escapeHtml(d.account_type)}</td>
+              <td class="amt-neg">${fmtMoney(d.balance, { plain: true })}</td>
+              <td>${d.interest_rate}%</td>
+              <td>${fmtMoney(d.minimum_payment, { plain: true })}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
   `;
 }
 
@@ -4124,7 +4300,7 @@ async function loadForecast() {
   const chartData = data.projection.map((p) => ({
     label: p.month.slice(5),
     values: [
-      { key: "Projected Net Worth", value: p.projected_net_worth, color: CHART_PALETTE[0] }
+      { key: "Projected Net Worth", value: p.projected_net_worth, color: chartPalette()[0] }
     ]
   }));
 
@@ -4135,24 +4311,27 @@ async function loadForecast() {
       <div class="card stat-card"><div class="label">90-Day Avg. Outflow</div><div class="value amt-neg">${fmtMoney(data.historical_monthly_expense, { plain: true })}</div></div>
     </div>
     <div style="margin-bottom:20px;">${groupedBarChart(chartData, { height: 220, width: 800 })}</div>
-    <table class="table">
-      <thead><tr><th>Month</th><th class="right">Est. Income</th><th class="right">Est. Expenses</th><th class="right">Est. Net Change</th><th class="right">Projected Net Worth</th></tr></thead>
-      <tbody>
-        ${data.projection.map((p) => `
-          <tr>
-            <td>${p.month}</td>
-            <td class="right amt-pos">${fmtMoney(p.estimated_income, { plain: true })}</td>
-            <td class="right amt-neg">${fmtMoney(p.estimated_expense, { plain: true })}</td>
-            <td class="right ${p.estimated_net_change >= 0 ? 'amt-pos' : 'amt-neg'}">${fmtMoney(p.estimated_net_change, { plain: true })}</td>
-            <td class="right font-bold">${fmtMoney(p.projected_net_worth, { plain: true })}</td>
-          </tr>
-        `).join("")}
-      </tbody>
-    </table>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Month</th><th class="right">Est. Income</th><th class="right">Est. Expenses</th><th class="right">Est. Net Change</th><th class="right">Projected Net Worth</th></tr></thead>
+        <tbody>
+          ${data.projection.map((p) => `
+            <tr>
+              <td>${p.month}</td>
+              <td class="right amt-pos">${fmtMoney(p.estimated_income, { plain: true })}</td>
+              <td class="right amt-neg">${fmtMoney(p.estimated_expense, { plain: true })}</td>
+              <td class="right ${p.estimated_net_change >= 0 ? 'amt-pos' : 'amt-neg'}">${fmtMoney(p.estimated_net_change, { plain: true })}</td>
+              <td class="right font-bold">${fmtMoney(p.projected_net_worth, { plain: true })}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
   `;
 }
 
 async function loadAllowances() {
+  setLoading($("allowancesTable"), 4);
   let items;
   try {
     items = await api("/api/allowances");
@@ -4275,6 +4454,11 @@ async function previewCsvImport(targetType) {
     if (!res.ok) throw new Error(data.error || "Preview failed");
 
     csvImportRows = data.sample_rows;
+    if (!data.total_rows || !data.sample_rows.length) {
+      $("csvPreviewArea").innerHTML = `<div class="empty-state" style="padding:18px;"><div class="ic">📄</div><div class="t">No data rows found</div><div>The file has a header but no rows to import.</div></div>`;
+      $("csvCommitBtn").disabled = true;
+      return;
+    }
     $("csvPreviewArea").innerHTML = `
       <div style="font-size:13px;margin-bottom:8px;">Found ${data.total_rows} total rows. Previewing first ${data.sample_rows.length}:</div>
       <div class="table-wrap" style="max-height:200px;overflow-y:auto;">
@@ -4292,17 +4476,42 @@ async function previewCsvImport(targetType) {
   }
 }
 
-function parseCsvLine(text) {
-  const result = [];
-  let cur = "", inQuotes = false;
+// RFC-4180 CSV parser: handles quoted fields, "" escapes, and newlines
+// inside quoted values.
+function parseCsv(text) {
+  const rows = [];
+  let row = [];
+  let cur = "";
+  let inQuotes = false;
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
-    if (c === '"') { inQuotes = !inQuotes; }
-    else if (c === ',' && !inQuotes) { result.push(cur.trim().replace(/^"|"$/g, "")); cur = ""; }
-    else { cur += c; }
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { cur += '"'; i++; }
+        else inQuotes = false;
+      } else {
+        cur += c;
+      }
+    } else if (c === '"') {
+      inQuotes = true;
+    } else if (c === ",") {
+      row.push(cur.trim()); cur = "";
+    } else if (c === "\n" || c === "\r") {
+      if (c === "\r" && text[i + 1] === "\n") i++;
+      row.push(cur.trim()); cur = "";
+      if (row.length > 1 || row[0] !== "") rows.push(row);
+      row = [];
+    } else {
+      cur += c;
+    }
   }
-  result.push(cur.trim().replace(/^"|"$/g, ""));
-  return result;
+  row.push(cur.trim());
+  if (row.length > 1 || row[0] !== "") rows.push(row);
+  return rows;
+}
+
+function parseCsvLine(text) {
+  return parseCsv(text)[0] || [];
 }
 
 async function commitCsvImport(targetType) {
@@ -4311,21 +4520,25 @@ async function commitCsvImport(targetType) {
 
   const reader = new FileReader();
   reader.onload = async (e) => {
-    const lines = e.target.result.split(/\r?\n/).filter((l) => l.trim());
-    if (lines.length < 2) return;
+    const rows = parseCsv(e.target.result);
+    if (rows.length < 2) {
+      toast("No data rows found in the CSV file", "error");
+      return;
+    }
 
-    const headers = parseCsvLine(lines[0]).map((h) => h.toLowerCase());
+    const headers = rows[0].map((h) => h.toLowerCase());
     const dateIdx = headers.findIndex((h) => h.includes("date"));
     const descIdx = headers.findIndex((h) => h.includes("desc") || h.includes("payee") || h.includes("name") || h.includes("title"));
     const amtIdx = headers.findIndex((h) => h.includes("amount") || h.includes("total") || h.includes("sum"));
 
     const items = [];
-    for (let i = 1; i < lines.length; i++) {
-      const parts = parseCsvLine(lines[i]);
+    let skipped = 0;
+    for (let i = 1; i < rows.length; i++) {
+      const parts = rows[i];
       if (parts.length < 2) continue;
 
       const rawAmt = Math.abs(parseFloat(parts[amtIdx >= 0 ? amtIdx : 1] || 0));
-      if (!rawAmt) continue;
+      if (!rawAmt || Number.isNaN(rawAmt)) { skipped++; continue; }
 
       items.push({
         title: parts[descIdx >= 0 ? descIdx : 0] || "Imported Item",
@@ -4335,10 +4548,15 @@ async function commitCsvImport(targetType) {
       });
     }
 
+    if (!items.length) {
+      toast("No importable rows found — check the amount column", "error");
+      return;
+    }
+
     try {
       const res = await api("/api/import/csv/commit", "POST", { target_type: targetType, items });
       closeModal();
-      toast(`Successfully imported ${res.imported_count} records`, "success");
+      toast(`Successfully imported ${res.imported_count} records${skipped ? ` (${skipped} row(s) skipped)` : ""}`, "success");
       if (targetType === "expense") loadExpenses(0);
       else loadIncome(0);
     } catch (err) {
