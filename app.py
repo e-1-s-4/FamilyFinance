@@ -369,6 +369,12 @@ CREATE INDEX IF NOT EXISTS idx_notifications_read ON notifications(is_read);
 CREATE INDEX IF NOT EXISTS idx_recurring_active ON recurring_rules(is_active, next_run_date);
 CREATE INDEX IF NOT EXISTS idx_expense_splits_expense ON expense_splits(expense_id);
 CREATE INDEX IF NOT EXISTS idx_income_splits_income ON income_splits(income_id);
+CREATE INDEX IF NOT EXISTS idx_expenses_member ON expenses(member);
+CREATE INDEX IF NOT EXISTS idx_income_member ON income(member);
+CREATE INDEX IF NOT EXISTS idx_expenses_account ON expenses(account_id);
+CREATE INDEX IF NOT EXISTS idx_income_account ON income(account_id);
+CREATE INDEX IF NOT EXISTS idx_bill_payments_account ON bill_payments(account_id);
+CREATE INDEX IF NOT EXISTS idx_budgets_active ON budgets(is_active, period, category);
 """
 
 MINIMAL_INDEX = """
@@ -458,6 +464,14 @@ class RateLimiter:
         now = time.time()
 
         with self._lock:
+            # Opportunistic cleanup so abandoned keys don't grow without bound.
+            if len(self._store) > 4096:
+                self._store = {
+                    k: v
+                    for k, v in self._store.items()
+                    if v and max(v) > now - window
+                }
+
             entries = [
                 timestamp
                 for timestamp in self._store.get(key, [])
@@ -1512,6 +1526,72 @@ def compute_account_balance(conn, account):
     return balance_cents, net_worth_cents
 
 
+def compute_all_account_balances(conn, accounts):
+    """
+    Compute balances/net-worth contributions for many accounts efficiently.
+
+    Returns {account_id: {"balance_cents": int, "net_worth_cents": int}} using
+    three grouped queries total instead of three queries per account.
+    """
+    income_by_account = {
+        row["account_id"]: row["total"]
+        for row in conn.execute(
+            """
+            SELECT account_id, SUM(amount_cents) AS total
+            FROM income
+            WHERE is_deleted=0 AND account_id IS NOT NULL
+            GROUP BY account_id
+            """
+        ).fetchall()
+    }
+
+    expense_by_account = {
+        row["account_id"]: row["total"]
+        for row in conn.execute(
+            """
+            SELECT account_id, SUM(amount_cents) AS total
+            FROM expenses
+            WHERE is_deleted=0 AND account_id IS NOT NULL
+            GROUP BY account_id
+            """
+        ).fetchall()
+    }
+
+    payments_by_account = {
+        row["account_id"]: row["total"]
+        for row in conn.execute(
+            f"""
+            SELECT bp.account_id, SUM(bp.amount_cents) AS total
+            {VALID_BILL_PAYMENT_FROM}
+            WHERE bp.account_id IS NOT NULL
+            GROUP BY bp.account_id
+            """
+        ).fetchall()
+    }
+
+    result = {}
+
+    for account in accounts:
+        opening_cents = account["opening_balance_cents"]
+        income_cents = income_by_account.get(account["id"], 0)
+        expense_cents = expense_by_account.get(account["id"], 0)
+        payment_cents = payments_by_account.get(account["id"], 0)
+
+        if account["account_type"] in LIABILITY_ACCOUNT_TYPES:
+            balance_cents = opening_cents + expense_cents - payment_cents - income_cents
+            net_worth_cents = -balance_cents
+        else:
+            balance_cents = opening_cents + income_cents - expense_cents - payment_cents
+            net_worth_cents = balance_cents
+
+        result[account["id"]] = {
+            "balance_cents": balance_cents,
+            "net_worth_cents": net_worth_cents,
+        }
+
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -2012,13 +2092,14 @@ def register_routes(app):
             ).fetchall()
         )
 
-        for account in accounts:
-            balance_cents, net_worth_cents = compute_account_balance(conn, account)
+        balances = compute_all_account_balances(conn, accounts)
 
-            account["balance_cents"] = balance_cents
-            account["balance"] = cents_to_float(balance_cents)
-            account["net_worth_cents"] = net_worth_cents
-            account["net_worth"] = cents_to_float(net_worth_cents)
+        for account in accounts:
+            entry = balances[account["id"]]
+            account["balance_cents"] = entry["balance_cents"]
+            account["balance"] = cents_to_float(entry["balance_cents"])
+            account["net_worth_cents"] = entry["net_worth_cents"]
+            account["net_worth"] = cents_to_float(entry["net_worth_cents"])
 
         return jsonify(accounts)
 
@@ -2137,11 +2218,11 @@ def register_routes(app):
 
         if q:
             like = f"%{q}%"
-            where += " AND (name LIKE ? OR email LIKE ? OR phone LIKE ? OR notes LIKE ?)"
+            where += " AND (p.name LIKE ? OR p.email LIKE ? OR p.phone LIKE ? OR p.notes LIKE ?)"
             params.extend([like, like, like, like])
 
         if category:
-            where += " AND category=?"
+            where += " AND p.category=?"
             params.append(category)
 
         conn = get_db()
@@ -2706,6 +2787,13 @@ def register_routes(app):
         if balance_cents <= 0:
             raise ValidationError("Bill is already fully paid")
 
+        account_id = ensure_reference_exists(
+            get_db(),
+            "accounts",
+            data.get("account_id", bill["account_id"]),
+            "account_id",
+        )
+
         amount_cents = parse_amount_from_data(
             data,
             field="amount",
@@ -2740,7 +2828,7 @@ def register_routes(app):
                     bid,
                     amount_cents,
                     payment_date,
-                    data.get("account_id") or bill["account_id"],
+                    account_id,
                     str(data.get("notes") or ""),
                 ),
             )
@@ -2761,7 +2849,17 @@ def register_routes(app):
     @app.post("/api/bills/<int:bid>/void")
     @require_roles("Admin", "Editor")
     def bill_void(bid):
-        with get_db() as conn:
+        conn = get_db()
+
+        exists = conn.execute(
+            "SELECT 1 FROM bills WHERE id=? AND is_deleted=0",
+            (bid,),
+        ).fetchone()
+
+        if not exists:
+            return jsonify({"error": "Not found"}), 404
+
+        with conn:
             conn.execute(
                 """
                 UPDATE bills
@@ -2808,7 +2906,9 @@ def register_routes(app):
             "SELECT * FROM bills WHERE is_deleted=0 ORDER BY created_at DESC"
         ).fetchall()
 
-        total_paid_cents = sum(r["paid_cents"] for r in rows)
+        total_paid_cents = sum(
+            r["paid_cents"] for r in rows if r["status"] != "Void"
+        )
         total_outstanding_cents = sum(
             (r["total_cents"] - r["paid_cents"])
             for r in rows
@@ -3710,6 +3810,7 @@ def register_routes(app):
     def recurring_run():
         today = date.today().isoformat()
         created = []
+        failed = []
 
         with get_db() as conn:
             rules = conn.execute(
@@ -3724,76 +3825,97 @@ def register_routes(app):
             for rule_row in rules:
                 rule = dict(rule_row)
 
-                # Catch-up guard: do not create more than 24 items per rule in one run.
-                for _ in range(24):
-                    if rule["next_run_date"] > today:
-                        break
+                # Each rule runs inside a SAVEPOINT so one broken rule cannot
+                # abort or roll back the work of the other rules.
+                conn.execute("SAVEPOINT recurring_rule")
 
-                    payload = {}
+                try:
+                    # Catch-up guard: do not create more than 24 items per rule in one run.
+                    for _ in range(24):
+                        if rule["next_run_date"] > today:
+                            break
 
-                    try:
-                        payload = json.loads(rule["payload"])
-                    except Exception:
                         payload = {}
 
-                    if not isinstance(payload, dict):
-                        payload = {}
+                        try:
+                            payload = json.loads(rule["payload"])
+                        except Exception:
+                            payload = {}
 
-                    if rule["entity_type"] == "expense":
-                        payload.setdefault("expense_date", rule["next_run_date"])
-                        entity_id = insert_expense(conn, payload)
-                        created.append({"entity_type": "expense", "id": entity_id})
+                        if not isinstance(payload, dict):
+                            payload = {}
 
-                    elif rule["entity_type"] == "income":
-                        payload.setdefault("income_date", rule["next_run_date"])
-                        entity_id = insert_income(conn, payload)
-                        created.append({"entity_type": "income", "id": entity_id})
+                        if rule["entity_type"] == "expense":
+                            payload.setdefault("expense_date", rule["next_run_date"])
+                            entity_id = insert_expense(conn, payload)
+                            created.append({"rule": rule["name"], "entity_type": "expense", "id": entity_id})
 
-                    elif rule["entity_type"] == "bill":
-                        payload.setdefault("bill_date", rule["next_run_date"])
-                        payload.setdefault("due_date", rule["next_run_date"])
+                        elif rule["entity_type"] == "income":
+                            payload.setdefault("income_date", rule["next_run_date"])
+                            entity_id = insert_income(conn, payload)
+                            created.append({"rule": rule["name"], "entity_type": "income", "id": entity_id})
 
-                        parsed_bill = parse_bill_payload(payload)
-                        settings = load_settings()
-                        bill_number = next_bill_number(conn, settings.get("bill_prefix", "BILL"))
+                        elif rule["entity_type"] == "bill":
+                            payload.setdefault("bill_date", rule["next_run_date"])
+                            payload.setdefault("due_date", rule["next_run_date"])
 
-                        entity_id = insert_bill(
-                            conn,
-                            parsed_bill,
-                            bill_number,
-                            paid_cents=0,
-                            status="Pending",
-                            paid_at=None,
+                            parsed_bill = parse_bill_payload(payload)
+                            settings = load_settings()
+                            bill_number = next_bill_number(conn, settings.get("bill_prefix", "BILL"))
+
+                            entity_id = insert_bill(
+                                conn,
+                                parsed_bill,
+                                bill_number,
+                                paid_cents=0,
+                                status="Pending",
+                                paid_at=None,
+                            )
+
+                            created.append({"rule": rule["name"], "entity_type": "bill", "id": entity_id})
+
+                        new_next_run_date = advance_recurring_date(
+                            rule["next_run_date"],
+                            rule["frequency"],
+                            rule["interval_value"],
                         )
 
-                        created.append({"entity_type": "bill", "id": entity_id})
+                        conn.execute(
+                            """
+                            UPDATE recurring_rules
+                            SET next_run_date=?, last_run_date=?
+                            WHERE id=?
+                            """,
+                            (new_next_run_date, rule["next_run_date"], rule["id"]),
+                        )
 
-                    new_next_run_date = advance_recurring_date(
-                        rule["next_run_date"],
-                        rule["frequency"],
-                        rule["interval_value"],
+                        rule["next_run_date"] = new_next_run_date
+
+                    conn.execute("RELEASE SAVEPOINT recurring_rule")
+
+                    notify(
+                        title=f"Recurring rule processed: {rule['name']}",
+                        body=f"Created recurring {rule['entity_type']} item(s).",
+                        link="/api/recurring",
                     )
 
-                    conn.execute(
-                        """
-                        UPDATE recurring_rules
-                        SET next_run_date=?, last_run_date=?
-                        WHERE id=?
-                        """,
-                        (new_next_run_date, rule["next_run_date"], rule["id"]),
+                except ValidationError as exc:
+                    conn.execute("ROLLBACK TO SAVEPOINT recurring_rule")
+                    conn.execute("RELEASE SAVEPOINT recurring_rule")
+                    failed.append({"rule": rule["name"], "error": exc.message})
+                    notify(
+                        title=f"Recurring rule failed: {rule['name']}",
+                        body=exc.message,
+                        link="/api/recurring",
                     )
 
-                    rule["next_run_date"] = new_next_run_date
+        audit("recurring_run", "recurring", "", f"Created {len(created)} item(s), failed {len(failed)} rule(s)")
 
-                notify(
-                    title=f"Recurring rule processed: {rule['name']}",
-                    body=f"Created recurring {rule['entity_type']} item(s).",
-                    link="/api/recurring",
-                )
-
-        audit("recurring_run", "recurring", "", f"Created {len(created)} item(s)")
-
-        return jsonify({"success": True, "created": created})
+        return jsonify({
+            "success": True,
+            "created": created,
+            "failed": failed,
+        })
 
     # -----------------------------------------------------------------------
     # Notifications
@@ -3968,37 +4090,54 @@ def register_routes(app):
 
         monthly = []
         current_month_start = today.replace(day=1)
+        trend_start_iso = add_months(current_month_start, -5).isoformat()
+
+        income_by_month = {
+            row["ym"]: row["total"]
+            for row in conn.execute(
+                """
+                SELECT strftime('%Y-%m', income_date) AS ym, SUM(amount_cents) AS total
+                FROM income
+                WHERE is_deleted=0 AND income_date >= ?
+                GROUP BY ym
+                """,
+                (trend_start_iso,),
+            ).fetchall()
+        }
+
+        expense_by_month = {
+            row["ym"]: row["total"]
+            for row in conn.execute(
+                """
+                SELECT strftime('%Y-%m', expense_date) AS ym, SUM(amount_cents) AS total
+                FROM expenses
+                WHERE is_deleted=0 AND expense_date >= ?
+                GROUP BY ym
+                """,
+                (trend_start_iso,),
+            ).fetchall()
+        }
+
+        bill_payment_by_month = {
+            row["ym"]: row["total"]
+            for row in conn.execute(
+                f"""
+                SELECT strftime('%Y-%m', bp.payment_date) AS ym, SUM(bp.amount_cents) AS total
+                {VALID_BILL_PAYMENT_FROM}
+                WHERE bp.payment_date >= ?
+                GROUP BY ym
+                """,
+                (trend_start_iso,),
+            ).fetchall()
+        }
 
         for i in range(5, -1, -1):
             d = add_months(current_month_start, -i)
             m = d.strftime("%Y-%m")
 
-            inc = conn.execute(
-                """
-                SELECT COALESCE(SUM(amount_cents),0)
-                FROM income
-                WHERE is_deleted=0 AND strftime('%Y-%m', income_date)=?
-                """,
-                (m,),
-            ).fetchone()[0]
-
-            exp = conn.execute(
-                """
-                SELECT COALESCE(SUM(amount_cents),0)
-                FROM expenses
-                WHERE is_deleted=0 AND strftime('%Y-%m', expense_date)=?
-                """,
-                (m,),
-            ).fetchone()[0]
-
-            bp = conn.execute(
-                f"""
-                SELECT COALESCE(SUM(bp.amount_cents),0)
-                {VALID_BILL_PAYMENT_FROM}
-                WHERE strftime('%Y-%m', bp.payment_date)=?
-                """,
-                (m,),
-            ).fetchone()[0]
+            inc = income_by_month.get(m, 0)
+            exp = expense_by_month.get(m, 0)
+            bp = bill_payment_by_month.get(m, 0)
 
             total_out = exp + bp
             savings = inc - total_out
@@ -4201,37 +4340,56 @@ def register_routes(app):
             "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
         ]
 
+        year_start_iso = f"{year}-01-01"
+        next_year_start_iso = f"{int(year) + 1}-01-01"
+
+        income_by_month = {
+            row["ym"]: row["total"]
+            for row in conn.execute(
+                """
+                SELECT strftime('%Y-%m', income_date) AS ym, SUM(amount_cents) AS total
+                FROM income
+                WHERE is_deleted=0 AND income_date >= ? AND income_date < ?
+                GROUP BY ym
+                """,
+                (year_start_iso, next_year_start_iso),
+            ).fetchall()
+        }
+
+        expense_by_month = {
+            row["ym"]: row["total"]
+            for row in conn.execute(
+                """
+                SELECT strftime('%Y-%m', expense_date) AS ym, SUM(amount_cents) AS total
+                FROM expenses
+                WHERE is_deleted=0 AND expense_date >= ? AND expense_date < ?
+                GROUP BY ym
+                """,
+                (year_start_iso, next_year_start_iso),
+            ).fetchall()
+        }
+
+        bill_payment_by_month = {
+            row["ym"]: row["total"]
+            for row in conn.execute(
+                f"""
+                SELECT strftime('%Y-%m', bp.payment_date) AS ym, SUM(bp.amount_cents) AS total
+                {VALID_BILL_PAYMENT_FROM}
+                WHERE bp.payment_date >= ? AND bp.payment_date < ?
+                GROUP BY ym
+                """,
+                (year_start_iso, next_year_start_iso),
+            ).fetchall()
+        }
+
         monthly = []
 
         for m in range(1, 13):
             month_key = f"{year}-{str(m).zfill(2)}"
 
-            inc = conn.execute(
-                """
-                SELECT COALESCE(SUM(amount_cents),0)
-                FROM income
-                WHERE is_deleted=0 AND strftime('%Y-%m', income_date)=?
-                """,
-                (month_key,),
-            ).fetchone()[0]
-
-            exp = conn.execute(
-                """
-                SELECT COALESCE(SUM(amount_cents),0)
-                FROM expenses
-                WHERE is_deleted=0 AND strftime('%Y-%m', expense_date)=?
-                """,
-                (month_key,),
-            ).fetchone()[0]
-
-            bp = conn.execute(
-                f"""
-                SELECT COALESCE(SUM(bp.amount_cents),0)
-                {VALID_BILL_PAYMENT_FROM}
-                WHERE strftime('%Y-%m', bp.payment_date)=?
-                """,
-                (month_key,),
-            ).fetchone()[0]
+            inc = income_by_month.get(month_key, 0)
+            exp = expense_by_month.get(month_key, 0)
+            bp = bill_payment_by_month.get(month_key, 0)
 
             total_out = exp + bp
             savings = inc - total_out
@@ -4417,6 +4575,17 @@ def register_routes(app):
                 (month, month),
             ).fetchall()
 
+            # Member-attributed expense actuals, used for member-specific budgets.
+            member_expense_rows = conn.execute(
+                """
+                SELECT member, category, SUM(amount_cents) AS cents
+                FROM expenses
+                WHERE is_deleted=0 AND strftime('%Y-%m', expense_date)=? AND member != ''
+                GROUP BY member, category
+                """,
+                (month,),
+            ).fetchall()
+
         else:
             year = request.args.get("year", str(date.today().year))
 
@@ -4448,14 +4617,33 @@ def register_routes(app):
                 (year, year),
             ).fetchall()
 
+            member_expense_rows = conn.execute(
+                """
+                SELECT member, category, SUM(amount_cents) AS cents
+                FROM expenses
+                WHERE is_deleted=0 AND strftime('%Y', expense_date)=? AND member != ''
+                GROUP BY member, category
+                """,
+                (year,),
+            ).fetchall()
+
         actual_by_category = {
             row["category"]: int(row["actual_cents"]) for row in actual_rows
         }
 
+        member_actual_by_key = {}
+        for row in member_expense_rows:
+            key = (row["member"], row["category"])
+            member_actual_by_key[key] = member_actual_by_key.get(key, 0) + int(row["cents"])
+
         result = []
 
         for budget in budgets:
-            actual_cents = actual_by_category.get(budget["category"], 0)
+            if budget["member"]:
+                actual_cents = member_actual_by_key.get((budget["member"], budget["category"]), 0)
+            else:
+                actual_cents = actual_by_category.get(budget["category"], 0)
+
             remaining_cents = budget["amount_cents"] - actual_cents
 
             result.append({
@@ -4482,6 +4670,47 @@ def register_routes(app):
 
         conn = get_db()
         current_month_start = date.today().replace(day=1)
+        range_start_iso = add_months(current_month_start, -(months - 1)).isoformat()
+        range_end_iso = add_months(current_month_start, 1).isoformat()
+
+        income_by_month = {
+            row["ym"]: row["total"]
+            for row in conn.execute(
+                """
+                SELECT strftime('%Y-%m', income_date) AS ym, SUM(amount_cents) AS total
+                FROM income
+                WHERE is_deleted=0 AND income_date >= ? AND income_date < ?
+                GROUP BY ym
+                """,
+                (range_start_iso, range_end_iso),
+            ).fetchall()
+        }
+
+        expense_by_month = {
+            row["ym"]: row["total"]
+            for row in conn.execute(
+                """
+                SELECT strftime('%Y-%m', expense_date) AS ym, SUM(amount_cents) AS total
+                FROM expenses
+                WHERE is_deleted=0 AND expense_date >= ? AND expense_date < ?
+                GROUP BY ym
+                """,
+                (range_start_iso, range_end_iso),
+            ).fetchall()
+        }
+
+        bill_payment_by_month = {
+            row["ym"]: row["total"]
+            for row in conn.execute(
+                f"""
+                SELECT strftime('%Y-%m', bp.payment_date) AS ym, SUM(bp.amount_cents) AS total
+                {VALID_BILL_PAYMENT_FROM}
+                WHERE bp.payment_date >= ? AND bp.payment_date < ?
+                GROUP BY ym
+                """,
+                (range_start_iso, range_end_iso),
+            ).fetchall()
+        }
 
         result = []
 
@@ -4489,32 +4718,9 @@ def register_routes(app):
             d = add_months(current_month_start, -i)
             month_key = d.strftime("%Y-%m")
 
-            inc = conn.execute(
-                """
-                SELECT COALESCE(SUM(amount_cents),0)
-                FROM income
-                WHERE is_deleted=0 AND strftime('%Y-%m', income_date)=?
-                """,
-                (month_key,),
-            ).fetchone()[0]
-
-            exp = conn.execute(
-                """
-                SELECT COALESCE(SUM(amount_cents),0)
-                FROM expenses
-                WHERE is_deleted=0 AND strftime('%Y-%m', expense_date)=?
-                """,
-                (month_key,),
-            ).fetchone()[0]
-
-            bill_payments = conn.execute(
-                f"""
-                SELECT COALESCE(SUM(bp.amount_cents),0)
-                {VALID_BILL_PAYMENT_FROM}
-                WHERE strftime('%Y-%m', bp.payment_date)=?
-                """,
-                (month_key,),
-            ).fetchone()[0]
+            inc = income_by_month.get(month_key, 0)
+            exp = expense_by_month.get(month_key, 0)
+            bill_payments = bill_payment_by_month.get(month_key, 0)
 
             outflow = exp + bill_payments
             savings = inc - outflow
@@ -4603,17 +4809,19 @@ def register_routes(app):
             "SELECT * FROM accounts WHERE is_active=1 ORDER BY name"
         ).fetchall())
 
+        balances = compute_all_account_balances(conn, accounts)
+
         net_worth_cents = 0
 
         for account in accounts:
-            balance_cents, contribution_cents = compute_account_balance(conn, account)
+            entry = balances[account["id"]]
 
-            account["balance_cents"] = balance_cents
-            account["balance"] = cents_to_float(balance_cents)
-            account["net_worth_cents"] = contribution_cents
-            account["net_worth"] = cents_to_float(contribution_cents)
+            account["balance_cents"] = entry["balance_cents"]
+            account["balance"] = cents_to_float(entry["balance_cents"])
+            account["net_worth_cents"] = entry["net_worth_cents"]
+            account["net_worth"] = cents_to_float(entry["net_worth_cents"])
 
-            net_worth_cents += contribution_cents
+            net_worth_cents += entry["net_worth_cents"]
 
         return jsonify({
             "accounts": accounts,
@@ -4635,10 +4843,12 @@ def register_routes(app):
             """
         ).fetchall()
 
+        accounts = rows_to_list(rows)
+        balances = compute_all_account_balances(conn, accounts)
+
         debts = []
-        for r in rows:
-            acc = dict(r)
-            balance_cents, _ = compute_account_balance(conn, acc)
+        for acc in accounts:
+            balance_cents = balances[acc["id"]]["balance_cents"]
             if balance_cents > 0:
                 debts.append({
                     "id": acc["id"],
@@ -4708,10 +4918,10 @@ def register_routes(app):
         conn = get_db()
 
         accounts = rows_to_list(conn.execute("SELECT * FROM accounts WHERE is_active=1").fetchall())
-        current_net_worth_cents = 0
-        for acc in accounts:
-            _, net_cents = compute_account_balance(conn, acc)
-            current_net_worth_cents += net_cents
+        balances = compute_all_account_balances(conn, accounts)
+        current_net_worth_cents = sum(
+            entry["net_worth_cents"] for entry in balances.values()
+        )
 
         today = date.today()
         m3_ago = (today - timedelta(days=90)).isoformat()
@@ -4830,20 +5040,28 @@ def register_routes(app):
             ORDER BY m.name
             """
         ).fetchall()
+
+        this_month = date.today().strftime("%Y-%m")
+
+        spent_by_member = {
+            row["member"]: row["total"]
+            for row in conn.execute(
+                """
+                SELECT member, SUM(amount_cents) AS total
+                FROM expenses
+                WHERE is_deleted=0 AND strftime('%Y-%m', expense_date)=?
+                GROUP BY member
+                """,
+                (this_month,),
+            ).fetchall()
+        }
+
         items = rows_to_list(rows)
+
         for item in items:
             item["amount"] = cents_to_float(item["amount_cents"])
 
-            # Calculate spent this month for member
-            this_month = date.today().strftime("%Y-%m")
-            spent_cents = conn.execute(
-                """
-                SELECT COALESCE(SUM(amount_cents), 0)
-                FROM expenses
-                WHERE is_deleted=0 AND member=? AND strftime('%Y-%m', expense_date)=?
-                """,
-                (item["member_name"], this_month)
-            ).fetchone()[0]
+            spent_cents = spent_by_member.get(item["member_name"], 0)
             item["spent_this_month"] = cents_to_float(spent_cents)
             item["spent_this_month_cents"] = spent_cents
             item["remaining_this_month"] = cents_to_float(item["amount_cents"] - spent_cents)
@@ -4998,10 +5216,29 @@ def register_routes(app):
         file.save(tmp_path)
 
         try:
-            # Test opening upload db
+            # Test opening upload db and confirm it looks like a FamilyFinance backup.
             test_conn = sqlite3.connect(tmp_path)
-            test_conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-            test_conn.close()
+
+            try:
+                table_names = {
+                    row[0]
+                    for row in test_conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    ).fetchall()
+                }
+            except sqlite3.DatabaseError:
+                raise ValidationError("Uploaded file is not a valid SQLite database")
+            finally:
+                test_conn.close()
+
+            missing_tables = {"users", "settings", "bills", "expenses"} - table_names
+
+            if missing_tables:
+                raise ValidationError(
+                    "Not a valid FamilyFinance backup (missing tables: "
+                    + ", ".join(sorted(missing_tables))
+                    + ")"
+                )
 
             # Backup upload over live db
             db_path = current_app.config["DATABASE"]

@@ -9,6 +9,17 @@ This README documents the enhanced version of the project, including session aut
 
 ### What's New in This Pass
 
+- **Reliability fixes.** `GET /api/payees?q=...` no longer fails with a database error when bills exist (an ambiguous-column bug); `POST /api/bills/<id>/void` now returns `404` for unknown or deleted bills instead of silently succeeding; bill payments validate `account_id` and return a clean `400` instead of a database error.
+- **Resilient recurring runs.** `POST /api/recurring/run` processes each rule inside its own savepoint, so one malformed rule can no longer abort the whole batch or roll back other rules' created items. The response now includes a `failed` array describing any rule that could not be processed, alongside the familiar `created` array, and each failure raises a notification.
+- **Faster reports.** Dashboard trends, annual reports, cash-flow series, account balances/net worth, debt payoff, forecast, and allowance tracking were rewritten from per-row/per-month/per-account query loops into grouped aggregate queries — an order of magnitude fewer SQL round-trips on populated databases.
+- **Member-aware budget report.** `GET /api/reports/budget` now compares member-specific budgets against only that member's expenses; household budgets continue to count all spending plus bill payments.
+- **Safer restore.** `POST /api/admin/restore` verifies the uploaded file is a SQLite database containing the expected FamilyFinance tables before swapping it in, rejecting garbage or foreign databases with a clear `400`.
+- **Housekeeping.** Voided bills are excluded from the paid total in bill CSV exports, the rate limiter prunes stale entries, and new indexes cover member/account lookups.
+
+---
+
+## Earlier Improvements
+
 - **A complete frontend.** `templates/index.html` was rebuilt from the ground up as a full single-page app that covers every backend feature — previously the shipped frontend only exposed a handful of dashboard/expense/income/bill/budget/goal screens and used a small fraction of the API. It now includes Accounts, Payees, Members, Categories, Recurring Rules, the full Reports suite, Notifications, and Admin, plus edit/delete everywhere, filtering, search, pagination, and CSV export. See [Frontend](#frontend) for the full list.
 - **Household user management.** The API and schema already supported `Admin` / `Editor` / `Viewer` roles, but there was previously no way to create a second login — only the bootstrap `Admin` account could ever exist. Added `GET/POST/PUT/DELETE /api/users` (Admin-only, with guardrails against locking yourself out) so a family can actually give each member their own login. See [Managing Household Users](#managing-household-users).
 - **Financial health insights.** The dashboard now includes a `financial_health` score with actionable recommendations, and `GET /api/insights` exposes a compact snapshot for widgets, automations, or mobile clients.
@@ -1256,7 +1267,7 @@ or:
 GET /api/reports/budget?period=yearly&year=2026
 ```
 
-Returns budgeted amounts, actual amounts, remaining amounts, and usage percentages.
+Returns budgeted amounts, actual amounts, remaining amounts, and usage percentages. Budgets that specify a `member` are compared against only that member's expenses for the period; household budgets (no member) count all expenses plus bill payments.
 
 ### Cash Flow Report
 
@@ -1311,6 +1322,22 @@ POST /api/recurring/run
 
 is called.
 
+Each due rule is processed inside its own savepoint. If a rule's payload is invalid, that rule is skipped and reported in the response's `failed` array (with a notification raised), while all other rules continue to be processed normally. A rule that fails remains due, so the failure stays visible on every subsequent run until it is fixed or removed.
+
+Example response:
+
+```json
+{
+  "success": true,
+  "created": [
+    { "rule": "Monthly rent", "entity_type": "bill", "id": 12 }
+  ],
+  "failed": [
+    { "rule": "Broken rule", "error": "title is required" }
+  ]
+}
+```
+
 You can automate this with:
 
 - cron
@@ -1358,6 +1385,8 @@ Restore by replacing the database file or using SQLite restore:
 ```bash
 sqlite3 familyfinance.db ".restore /backups/familyfinance-backup.db"
 ```
+
+The `POST /api/admin/restore` endpoint (Admin only, multipart form field `file`) accepts a previously downloaded `.db` backup and restores it over the live database. Before swapping anything it verifies that the upload is a valid SQLite file containing the expected FamilyFinance tables (`users`, `settings`, `bills`, `expenses`), returning a `400` with a descriptive error otherwise.
 
 If WAL mode is active, you may also see these files:
 
