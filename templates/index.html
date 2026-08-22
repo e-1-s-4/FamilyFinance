@@ -1420,6 +1420,14 @@
 
         <div class="card section">
           <div class="card-head">
+            <div><h3>API Tokens</h3><div class="sub">Bearer tokens for cron jobs, Home Assistant, or webhooks</div></div>
+            <button class="btn small role-gate" data-role="Admin,Editor" onclick="openTokenModal()">+ Create Token</button>
+          </div>
+          <div class="table-wrap" id="tokensTable"></div>
+        </div>
+
+        <div class="card section">
+          <div class="card-head">
             <div><h3>Audit Log</h3><div class="sub">Every login, create, update, and delete action</div></div>
           </div>
           <div class="table-wrap" id="auditTable"></div>
@@ -1833,7 +1841,7 @@ function showTab(name, opts) {
     allowances: loadAllowances,
     categories: () => loadCategories(),
     settings: loadSettingsView,
-    admin: () => { loadAudit(0); loadUsers(); $("adminWhoAmI").textContent = `${state.user.username} (${state.user.role})`; },
+    admin: () => { loadAudit(0); loadUsers(); loadTokens(); $("adminWhoAmI").textContent = `${state.user.username} (${state.user.role})`; },
   };
 
   if (loaders[name]) loaders[name]();
@@ -1999,8 +2007,80 @@ document.addEventListener("submit", (e) => {
 
 
 /* =========================================================================
-   SHARED CACHES (members, accounts, payees, categories, settings)
-   ========================================================================= */
+    SHARED CACHES (members, accounts, payees, categories, settings)
+    ========================================================================= */
+
+// Entity change pub/sub: whenever a cache is refreshed, any open modal's
+// dropdowns built from that entity are re-filled in place, so a quick-add on
+// one screen never leaves another open form stale.
+const ENTITY_SUBSCRIBERS = { members: [], accounts: [], payees: [], categories: [] };
+
+function onEntityChanged(entity, fn) {
+  if (!ENTITY_SUBSCRIBERS[entity]) ENTITY_SUBSCRIBERS[entity] = [];
+  ENTITY_SUBSCRIBERS[entity].push(fn);
+}
+
+function emitEntityChanged(entity) {
+  (ENTITY_SUBSCRIBERS[entity] || []).forEach((fn) => {
+    try { fn(); } catch (err) { /* a broken listener must not break saves */ }
+  });
+}
+
+// How to rebuild each cached <select> that can appear inside a modal.
+const MODAL_SELECT_BUILDERS = {
+  expMember: (cur) => memberOptions(cur, { useId: true }),
+  incMember: (cur) => memberOptions(cur, { useId: true }),
+  rpMember: (cur) => memberOptions(cur, { useId: true }),
+  budMember: (cur) => memberOptions(cur),
+  alMember: (cur) => memberOptions(cur, { useId: true, includeNone: false, allValue: "" }),
+  expAccount: (cur) => accountOptions(cur),
+  incAccount: (cur) => accountOptions(cur),
+  billAccount: (cur) => accountOptions(cur),
+  payAccount: (cur) => accountOptions(cur),
+  rpAccount: (cur) => accountOptions(cur),
+  billPayeeSelect: (cur) => payeeOptions(cur),
+  expCategory: (cur) => categoryOptions("expense", cur),
+  incCategory: (cur) => categoryOptions("income", cur),
+  budCategory: (cur) => categoryOptions("expense", cur),
+  payCategory: (cur) => categoryOptions("bill", cur),
+};
+
+const MODAL_SELECT_ENTITY = {
+  members: ["expMember", "incMember", "rpMember", "budMember", "alMember"],
+  accounts: ["expAccount", "incAccount", "billAccount", "payAccount", "rpAccount"],
+  payees: ["billPayeeSelect"],
+  categories: ["expCategory", "incCategory", "budCategory", "payCategory"],
+};
+
+function refreshModalSelects(entity) {
+  const overlay = $("activeModalOverlay");
+  if (!overlay) return;
+
+  const ids = MODAL_SELECT_ENTITY[entity] || [];
+  ids.forEach((id) => {
+    overlay.querySelectorAll(`#${id}`).forEach((sel) => {
+      const builder = MODAL_SELECT_BUILDERS[id];
+      if (!builder) return;
+      const cur = sel.value;
+      sel.innerHTML = builder(cur);
+      // Keep the previous selection when the option still exists.
+      if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
+    });
+  });
+
+  // Split rows are generated with classes rather than ids.
+  if (entity === "members") {
+    overlay.querySelectorAll("select.es-member").forEach((sel) => {
+      const cur = sel.value;
+      sel.innerHTML = memberOptions(cur);
+      if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
+    });
+  }
+}
+
+Object.keys(ENTITY_SUBSCRIBERS).forEach((entity) => {
+  onEntityChanged(entity, () => refreshModalSelects(entity));
+});
 
 async function loadAllCaches() {
   await Promise.all([loadSettingsCache(), loadMembersCache(), loadAccountsCache(), loadPayeesCache(), loadCategoriesCache()]);
@@ -2015,10 +2095,14 @@ async function loadSettingsCache() {
 
 async function loadMembersCache() {
   try { state.caches.members = await api("/api/members"); } catch (err) { state.caches.members = []; }
+  fillMemberFilterSelect($("expensesMemberFilter"));
+  fillMemberFilterSelect($("incomeMemberFilter"));
+  emitEntityChanged("members");
 }
 
 async function loadAccountsCache() {
   try { state.caches.accounts = await api("/api/accounts"); } catch (err) { state.caches.accounts = []; }
+  emitEntityChanged("accounts");
 }
 
 async function loadPayeesCache() {
@@ -2026,6 +2110,7 @@ async function loadPayeesCache() {
     const data = await api("/api/payees?limit=200");
     state.caches.payees = data.items || [];
   } catch (err) { state.caches.payees = []; }
+  emitEntityChanged("payees");
 }
 
 async function loadCategoriesCache() {
@@ -2034,6 +2119,10 @@ async function loadCategoriesCache() {
     state.caches.categories.income = await api("/api/categories?type=income");
     state.caches.categories.bill = await api("/api/categories?type=bill");
   } catch (err) { /* ignore */ }
+  fillCategoryFilterSelect($("expensesCategoryFilter"), "expense");
+  fillCategoryFilterSelect($("incomeCategoryFilter"), "income");
+  fillCategoryFilterSelect($("billsCategoryFilter"), "bill");
+  emitEntityChanged("categories");
 }
 
 function optionsHtml(list, { value, label, selected, blankLabel }) {
@@ -2299,7 +2388,7 @@ function simpleMiniTable(rows, cols) {
   if (!rows.length) return `<div class="empty-state" style="padding:26px;"><div class="ic">—</div><div class="t">Nothing here yet</div></div>`;
   return `
     <table>
-      <thead><tr>${cols.map((c) => `<th class="${c.right ? 'right' : ''}">${escapeHtml(c.label)}</th>`).join("")}</tr></thead>
+      <thead><tr>${cols.map((c) => `<th scope="col" class="${c.right ? 'right' : ''}">${escapeHtml(c.label)}</th>`).join("")}</tr></thead>
       <tbody>
         ${rows.map((r) => `
           <tr>${cols.map((c) => {
@@ -2348,7 +2437,7 @@ async function loadExpenses(offset) {
   $("expensesTable").innerHTML = data.items.length ? `
     <table>
       <thead><tr>
-        <th>Title</th><th>Category</th><th>Date</th><th>Member</th><th>Store</th><th class="right">Amount</th><th></th>
+        <th scope="col">Title</th><th scope="col">Category</th><th scope="col">Date</th><th scope="col">Member</th><th scope="col">Store</th><th scope="col" class="right">Amount</th><th scope="col"></th>
       </tr></thead>
       <tbody>
         ${data.items.map((item) => `
@@ -2403,7 +2492,7 @@ function expenseFormHtml(item) {
         <div class="field"><label>Primary Category *</label><select id="expCategory">${categoryOptions("expense", item.category)}</select></div>
         <div class="field"><label>Date *</label><input id="expDate" type="date" required value="${item.expense_date || todayIso()}" /></div>
         <div class="field"><label>Store / Vendor</label><input id="expStore" value="${escapeHtml(item.store || "")}" /></div>
-        <div class="field"><label>Member</label><select id="expMember">${memberOptions(item.member)}</select></div>
+        <div class="field"><label>Member</label><select id="expMember">${memberOptions(item.member_id ?? "", { useId: true })}</select></div>
         <div class="field"><label>Account</label><select id="expAccount">${accountOptions(item.account_id)}</select></div>
         <div class="field"><label>Receipt Ref</label><input id="expReceipt" value="${escapeHtml(item.receipt_ref || "")}" /></div>
         <div class="field full"><label>Tags (comma-separated)</label><input id="expTags" value="${escapeHtml(item.tags || "")}" /></div>
@@ -2454,7 +2543,7 @@ async function saveExpense(event, id) {
     category: $("expCategory").value,
     expense_date: $("expDate").value,
     store: $("expStore").value,
-    member: memberVal === "all" ? "" : memberVal,
+    member_id: memberVal === "all" ? null : (memberVal || null),
     account_id: $("expAccount").value || null,
     receipt_ref: $("expReceipt").value,
     tags: $("expTags").value,
@@ -2515,7 +2604,7 @@ async function loadIncome(offset) {
   $("incomeTable").innerHTML = data.items.length ? `
     <table>
       <thead><tr>
-        <th>Title</th><th>Category</th><th>Date</th><th>Member</th><th>Source</th><th class="right">Amount</th><th></th>
+        <th scope="col">Title</th><th scope="col">Category</th><th scope="col">Date</th><th scope="col">Member</th><th scope="col">Source</th><th scope="col" class="right">Amount</th><th scope="col"></th>
       </tr></thead>
       <tbody>
         ${data.items.map((item) => `
@@ -2551,7 +2640,7 @@ function incomeFormHtml(item) {
       <div class="field"><label>Category *</label><select id="incCategory">${categoryOptions("income", item.category)}</select></div>
       <div class="field"><label>Date *</label><input id="incDate" type="date" required value="${item.income_date || todayIso()}" /></div>
       <div class="field"><label>Source</label><input id="incSource" value="${escapeHtml(item.source || "")}" /></div>
-      <div class="field"><label>Member</label><select id="incMember">${memberOptions(item.member)}</select></div>
+      <div class="field"><label>Member</label><select id="incMember">${memberOptions(item.member_id ?? "", { useId: true })}</select></div>
       <div class="field"><label>Account</label><select id="incAccount">${accountOptions(item.account_id)}</select></div>
       <div class="field"><label>Tags (comma-separated)</label><input id="incTags" value="${escapeHtml(item.tags || "")}" /></div>
       <div class="field full"><label>Notes</label><textarea id="incNotes">${escapeHtml(item.notes || "")}</textarea></div>
@@ -2586,7 +2675,7 @@ async function saveIncome(event, id) {
     category: $("incCategory").value,
     income_date: $("incDate").value,
     source: $("incSource").value,
-    member: memberVal === "all" ? "" : memberVal,
+    member_id: memberVal === "all" ? null : (memberVal || null),
     account_id: $("incAccount").value || null,
     tags: $("incTags").value,
     notes: $("incNotes").value,
@@ -2661,8 +2750,8 @@ async function loadBills(offset) {
   $("billsTable").innerHTML = data.items.length ? `
     <table>
       <thead><tr>
-        <th>Bill #</th><th>Payee</th><th>Category</th><th>Due Date</th>
-        <th class="right">Total</th><th class="right">Paid</th><th class="right">Balance</th><th>Status</th><th></th>
+        <th scope="col">Bill #</th><th scope="col">Payee</th><th scope="col">Category</th><th scope="col">Due Date</th>
+        <th scope="col" class="right">Total</th><th scope="col" class="right">Paid</th><th scope="col" class="right">Balance</th><th scope="col">Status</th><th scope="col"></th>
       </tr></thead>
       <tbody>
         ${data.items.map((item) => `
@@ -2679,6 +2768,7 @@ async function loadBills(offset) {
               <div class="row-actions">
                 <button class="btn ghost small" onclick="printBill(${item.id})">Print</button>
                 ${item.status !== "Paid" && item.status !== "Void" ? `<button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="openPayBillModal(${item.id})">Pay</button>` : ""}
+                ${item.paid_amount > 0 ? `<button class="btn ghost small" onclick="openBillPaymentsModal(${item.id})">Payments</button>` : ""}
                 <button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="openBillModal(${item.id})">Edit</button>
                 ${item.status !== "Void" ? `<button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="confirmVoidBill(${item.id})">Void</button>` : ""}
                 <button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="confirmDeleteBill(${item.id})">Delete</button>
@@ -2927,6 +3017,66 @@ function confirmVoidBill(id) {
   });
 }
 
+// Payment history for one bill, with per-payment reversal (delete). The
+// server recomputes paid_cents and the bill status after each removal.
+async function openBillPaymentsModal(billId) {
+  let bill;
+  try {
+    bill = await api(`/api/bills/${billId}`);
+  } catch (err) {
+    toast(err.message, "error");
+    return;
+  }
+
+  const renderRows = (payments) => payments.length ? payments.map((p) => `
+    <tr>
+      <td>${fmtDate(p.payment_date)}</td>
+      <td class="right num">${fmtMoney(p.amount, { neutral: true })}</td>
+      <td>${escapeHtml(p.account_name || "—")}</td>
+      <td class="wrap">${escapeHtml(p.notes || "")}</td>
+      <td>
+        <div class="row-actions">
+          ${bill.status === "Void" ? `<span class="pill">Bill voided</span>` : `<button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="deleteBillPayment(${bill.id}, ${p.id})">Reverse</button>`}
+        </div>
+      </td>
+    </tr>
+  `).join("") : `<tr><td colspan="5"><div class="empty-state" style="padding:18px;">No payments recorded.</div></td></tr>`;
+
+  const bodyHtml = `
+    <div id="paymentsSummary" class="grid cols-3" style="margin-bottom:14px;">
+      <div class="stat-card card" style="padding:12px;"><div class="label">Total</div><div class="value" style="font-size:18px;">${fmtMoney(bill.total_amount, { plain: true })}</div></div>
+      <div class="stat-card card" style="padding:12px;"><div class="label">Paid</div><div class="value amt-pos" style="font-size:18px;">${fmtMoney(bill.paid_amount, { plain: true })}</div></div>
+      <div class="stat-card card" style="padding:12px;"><div class="label">Balance</div><div class="value" style="font-size:18px;">${fmtMoney(bill.balance, { plain: true })}</div></div>
+    </div>
+    <div class="table-wrap" id="paymentsTableWrap">
+      <table>
+        <thead><tr><th scope="col">Date</th><th scope="col" class="right">Amount</th><th scope="col">Account</th><th scope="col" class="wrap">Notes</th><th scope="col"></th></tr></thead>
+        <tbody id="paymentsTableBody">${renderRows(bill.payments || [])}</tbody>
+      </table>
+    </div>
+  `;
+
+  openModal({
+    title: `Payments — ${bill.bill_number} (${bill.payee_name})`,
+    wide: true,
+    bodyHtml,
+    footHtml: `
+      <button class="btn secondary" onclick="closeModal()">Close</button>
+      <button class="btn" onclick="openPayBillModal(${bill.id})">+ Record Payment</button>
+    `,
+  });
+}
+
+async function deleteBillPayment(billId, paymentId) {
+  confirmModal("Reverse this payment? The bill's paid amount and status are recalculated automatically.", async () => {
+    await apiAction(() => api(`/api/bills/${billId}/payments/${paymentId}`, "DELETE"), "Payment reversed");
+    loadBills();
+    if (currentTab === "dashboard") loadDashboard();
+    // Re-open once the confirm dialog has finished closing itself.
+    setTimeout(() => openBillPaymentsModal(billId), 60);
+  });
+}
+
 function confirmDeleteBill(id) {
   confirmModal("Delete this bill? This can't be undone.", async () => {
     await apiAction(() => api(`/api/bills/${id}`, "DELETE"), "Bill deleted");
@@ -3081,6 +3231,7 @@ async function loadGoals() {
         </div>
       </div>
       ${g.target_date ? `<div class="field-hint">Target date: ${fmtDate(g.target_date)}</div>` : ""}
+      ${g.allocation_pct > 0 ? `<div class="pill info" style="margin-top:4px;">Auto-allocates ${g.allocation_pct}% of income</div>` : ""}
       <div style="margin:14px 0 6px;font-size:13px;" class="muted num">${fmtMoney(g.current, { plain: true })} of ${fmtMoney(g.target, { plain: true })}</div>
       <div class="progress-track"><div class="progress-fill" style="width:${Math.min(100, g.progress_pct)}%;"></div></div>
       <div class="field-hint" style="margin-top:6px;">${g.progress_pct}% funded</div>
@@ -3098,7 +3249,9 @@ function goalFormHtml(item) {
       <div class="field full"><label>Goal Name *</label><input id="goalName" required value="${escapeHtml(item.name || "")}" /></div>
       <div class="field"><label>Target Amount *</label><input id="goalTarget" type="number" step="0.01" min="0.01" required value="${item.target ?? ""}" /></div>
       <div class="field"><label>Current Amount</label><input id="goalCurrent" type="number" step="0.01" min="0" value="${item.current ?? 0}" /></div>
-      <div class="field full"><label>Target Date</label><input id="goalTargetDate" type="date" value="${item.target_date || ""}" /></div>
+      <div class="field"><label>Auto-Allocate % of Income</label><input id="goalAllocationPct" type="number" step="0.01" min="0" max="100" value="${item.allocation_pct ?? 0}" /></div>
+      <div class="field"><label>Target Date</label><input id="goalTargetDate" type="date" value="${item.target_date || ""}" /></div>
+      <div class="field-hint full">Auto-allocation routes that percentage of every recorded income deposit into this goal (sinking fund).</div>
       <div class="field full"><label>Notes</label><textarea id="goalNotes">${escapeHtml(item.notes || "")}</textarea></div>
     </form>
   `;
@@ -3125,6 +3278,7 @@ async function saveGoal(event, id) {
     name: $("goalName").value,
     target: $("goalTarget").value,
     current: $("goalCurrent").value || 0,
+    allocation_pct: $("goalAllocationPct").value || 0,
     target_date: $("goalTargetDate").value || null,
     notes: $("goalNotes").value,
   };
@@ -3186,7 +3340,7 @@ async function loadRecurring() {
   $("recurringTable").innerHTML = items.length ? `
     <table>
       <thead><tr>
-        <th>Name</th><th>Type</th><th>Frequency</th><th>Next Run</th><th>Last Run</th><th>Status</th><th></th>
+        <th scope="col">Name</th><th scope="col">Type</th><th scope="col">Frequency</th><th scope="col">Next Run</th><th scope="col">Last Run</th><th scope="col">Status</th><th scope="col"></th>
       </tr></thead>
       <tbody>
         ${items.map((r) => `
@@ -3220,7 +3374,7 @@ function recurringPayloadFields(entityType, p) {
       <div class="field"><label>Amount *</label><input id="rpAmount" type="number" step="0.01" min="0.01" required value="${p.amount ?? ""}" /></div>
       <div class="field"><label>Category</label><select id="rpCategory">${categoryOptions("expense", p.category)}</select></div>
       <div class="field"><label>Store</label><input id="rpStore" value="${escapeHtml(p.store || "")}" /></div>
-      <div class="field"><label>Member</label><select id="rpMember">${memberOptions(p.member)}</select></div>
+      <div class="field"><label>Member</label><select id="rpMember">${memberOptions(p.member_id ?? "", { useId: true })}</select></div>
       <div class="field"><label>Account</label><select id="rpAccount">${accountOptions(p.account_id)}</select></div>
     `;
   }
@@ -3230,7 +3384,7 @@ function recurringPayloadFields(entityType, p) {
       <div class="field"><label>Amount *</label><input id="rpAmount" type="number" step="0.01" min="0.01" required value="${p.amount ?? ""}" /></div>
       <div class="field"><label>Category</label><select id="rpCategory">${categoryOptions("income", p.category)}</select></div>
       <div class="field"><label>Source</label><input id="rpSource" value="${escapeHtml(p.source || "")}" /></div>
-      <div class="field"><label>Member</label><select id="rpMember">${memberOptions(p.member)}</select></div>
+      <div class="field"><label>Member</label><select id="rpMember">${memberOptions(p.member_id ?? "", { useId: true })}</select></div>
       <div class="field"><label>Account</label><select id="rpAccount">${accountOptions(p.account_id)}</select></div>
     `;
   }
@@ -3304,13 +3458,13 @@ function collectRecurringPayload(entityType) {
   if (entityType === "expense") {
     return {
       title: $("rpTitle").value, amount: $("rpAmount").value, category: $("rpCategory").value,
-      store: $("rpStore").value, member: $("rpMember").value === "all" ? "" : $("rpMember").value, account_id: $("rpAccount").value || null,
+      store: $("rpStore").value, member_id: $("rpMember").value === "all" ? null : ($("rpMember").value || null), account_id: $("rpAccount").value || null,
     };
   }
   if (entityType === "income") {
     return {
       title: $("rpTitle").value, amount: $("rpAmount").value, category: $("rpCategory").value,
-      source: $("rpSource").value, member: $("rpMember").value === "all" ? "" : $("rpMember").value, account_id: $("rpAccount").value || null,
+      source: $("rpSource").value, member_id: $("rpMember").value === "all" ? null : ($("rpMember").value || null), account_id: $("rpAccount").value || null,
     };
   }
   return {
@@ -3439,7 +3593,7 @@ async function loadReportsOverview() {
       <div class="card-head"><h3>Bill Status Breakdown</h3></div>
       <div class="table-wrap">
         ${data.status_breakdown.length ? `
-          <table><thead><tr><th>Status</th><th class="right">Count</th><th class="right">Total</th></tr></thead>
+          <table><thead><tr><th scope="col">Status</th><th scope="col" class="right">Count</th><th scope="col" class="right">Total</th></tr></thead>
           <tbody>${data.status_breakdown.map((s) => `<tr><td>${billStatusPill(s.status)}</td><td class="right num">${s.count}</td><td class="right">${fmtMoney(s.total, { neutral: true })}</td></tr>`).join("")}</tbody></table>
         ` : `<div class="empty-state">No bills yet</div>`}
       </div>
@@ -3529,7 +3683,7 @@ async function loadReportCashflow() {
     <div class="card section">
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Month</th><th class="right">Income</th><th class="right">Expenses</th><th class="right">Bill Payments</th><th class="right">Savings</th><th class="right">Rate</th></tr></thead>
+          <thead><tr><th scope="col">Month</th><th scope="col" class="right">Income</th><th scope="col" class="right">Expenses</th><th scope="col" class="right">Bill Payments</th><th scope="col" class="right">Savings</th><th scope="col" class="right">Rate</th></tr></thead>
           <tbody>
             ${data.map((m) => `<tr>
               <td>${escapeHtml(m.month)}</td>
@@ -3561,7 +3715,7 @@ async function loadReportNetWorth() {
       <div class="card-head"><h3>By Account</h3></div>
       <div class="table-wrap">
         ${data.accounts.length ? `
-          <table><thead><tr><th>Account</th><th>Type</th><th class="right">Balance</th><th class="right">Net Worth Contribution</th></tr></thead>
+          <table><thead><tr><th scope="col">Account</th><th scope="col">Type</th><th scope="col" class="right">Balance</th><th scope="col" class="right">Net Worth Contribution</th></tr></thead>
           <tbody>${data.accounts.map((a) => `<tr>
             <td>${escapeHtml(a.name)}</td>
             <td>${escapeHtml(a.account_type)}</td>
@@ -3585,7 +3739,7 @@ async function loadReportSubscriptions() {
       <div class="card-head"><div><h3>Recurring Bills & Subscriptions</h3><div class="sub">Detected from Subscription, Internet, and Phone categories</div></div></div>
       <div class="table-wrap">
         ${items.length ? `
-          <table><thead><tr><th>Payee</th><th>Category</th><th class="right">Bills</th><th class="right">Total Billed</th><th>Latest Due</th></tr></thead>
+          <table><thead><tr><th scope="col">Payee</th><th scope="col">Category</th><th scope="col" class="right">Bills</th><th scope="col" class="right">Total Billed</th><th scope="col">Latest Due</th></tr></thead>
           <tbody>${items.map((it) => `<tr>
             <td>${escapeHtml(it.payee_name)}</td>
             <td>${escapeHtml(it.bill_category)}</td>
@@ -3611,7 +3765,7 @@ async function loadReportPayees() {
       <div class="card-head"><h3>Payments by Payee — ${year}</h3></div>
       <div class="table-wrap">
         ${items.length ? `
-          <table><thead><tr><th>Payee</th><th>Category</th><th class="right">Bills</th><th class="right">Paid</th></tr></thead>
+          <table><thead><tr><th scope="col">Payee</th><th scope="col">Category</th><th scope="col" class="right">Bills</th><th scope="col" class="right">Paid</th></tr></thead>
           <tbody>${items.map((it) => `<tr>
             <td>${escapeHtml(it.payee)}</td>
             <td>${escapeHtml(it.category)}</td>
@@ -3745,7 +3899,7 @@ async function loadPayees(offset) {
 
   $("payeesTable").innerHTML = data.items.length ? `
     <table>
-      <thead><tr><th>Name</th><th>Category</th><th>Email</th><th class="right">Bills</th><th class="right">Total Paid</th><th></th></tr></thead>
+      <thead><tr><th scope="col">Name</th><th scope="col">Category</th><th scope="col">Email</th><th scope="col" class="right">Bills</th><th scope="col" class="right">Total Paid</th><th scope="col"></th></tr></thead>
       <tbody>
         ${data.items.map((p) => `
           <tr>
@@ -3839,7 +3993,7 @@ async function loadMembers() {
 
   $("membersTable").innerHTML = items.length ? `
     <table>
-      <thead><tr><th>Name</th><th>Email</th><th>Role</th><th></th></tr></thead>
+      <thead><tr><th scope="col">Name</th><th scope="col">Email</th><th scope="col">Role</th><th scope="col"></th></tr></thead>
       <tbody>
         ${items.map((m) => `
           <tr>
@@ -3937,7 +4091,7 @@ async function loadCategories() {
 
   $("categoriesTable").innerHTML = items.length ? `
     <table>
-      <thead><tr><th>Name</th><th>Status</th><th></th></tr></thead>
+      <thead><tr><th scope="col">Name</th><th scope="col">Status</th><th scope="col"></th></tr></thead>
       <tbody>
         ${items.map((c) => `
           <tr>
@@ -4142,7 +4296,7 @@ async function loadUsers() {
 
   $("usersTable").innerHTML = usersCache.length ? `
     <table>
-      <thead><tr><th>Username</th><th>Role</th><th>Added</th><th></th></tr></thead>
+      <thead><tr><th scope="col">Username</th><th scope="col">Role</th><th scope="col">Added</th><th scope="col"></th></tr></thead>
       <tbody>
         ${usersCache.map((u) => `
           <tr>
@@ -4237,7 +4391,7 @@ async function loadAudit(offset) {
 
   $("auditTable").innerHTML = data.items.length ? `
     <table>
-      <thead><tr><th>When</th><th>User</th><th>Action</th><th>Entity</th><th class="wrap">Details</th></tr></thead>
+      <thead><tr><th scope="col">When</th><th scope="col">User</th><th scope="col">Action</th><th scope="col">Entity</th><th scope="col" class="wrap">Details</th></tr></thead>
       <tbody>
         ${data.items.map((a) => `
           <tr>
@@ -4261,6 +4415,100 @@ function downloadBackup() {
 }
 
 /* =========================================================================
+    API TOKENS (Bearer auth for automations)
+    ========================================================================= */
+
+let tokensCache = [];
+
+async function loadTokens() {
+  const el = $("tokensTable");
+  if (!el) return;
+  setLoading(el, 3);
+  try {
+    tokensCache = await api("/api/auth/tokens");
+  } catch (err) {
+    el.innerHTML = `<div class="empty-state">Couldn't load tokens.</div>`;
+    return;
+  }
+
+  el.innerHTML = tokensCache.length ? `
+    <table>
+      <thead><tr><th scope="col">Name</th><th scope="col">Role</th><th scope="col">Owner</th><th scope="col">Created</th><th scope="col">Last Used</th><th scope="col">Status</th><th scope="col"></th></tr></thead>
+      <tbody>
+        ${tokensCache.map((t) => `
+          <tr>
+            <td>${escapeHtml(t.name || "(unnamed)")}</td>
+            <td>${roleBadge(t.role)}</td>
+            <td>${escapeHtml(t.username || "")}</td>
+            <td>${fmtDate(t.created_at)}</td>
+            <td>${t.last_used_at ? fmtDateTime(t.last_used_at) : "never"}</td>
+            <td>${t.revoked ? `<span class="pill danger">Revoked</span>` : `<span class="pill success">Active</span>`}</td>
+            <td>
+              <div class="row-actions">
+                ${t.revoked ? "" : `<button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="revokeToken(${t.id})">Revoke</button>`}
+              </div>
+            </td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  ` : `<div class="empty-state"><div class="ic">🔑</div><div class="t">No API tokens yet</div><div>Create one to let cron jobs or automations call the API with an Authorization: Bearer header.</div></div>`;
+
+  applyRoleGates();
+}
+
+function openTokenModal() {
+  openModal({
+    title: "Create API Token",
+    bodyHtml: `
+      <form id="tokenForm" onsubmit="saveToken(event)">
+        <p class="field-hint" style="margin-top:0;">Send the token as <span class="kbd">Authorization: Bearer &lt;token&gt;</span>. It is shown only once and stored hashed. A token can never grant a stronger role than your own.</p>
+        <div class="form-grid">
+          <div class="field full"><label>Name (what it's for)</label><input id="tokName" placeholder="e.g. Home Assistant" maxlength="80" /></div>
+          <div class="field">
+            <label>Role Scope *</label>
+            <select id="tokRole">
+              ${hasRole("Admin") ? `<option value="Admin">Admin</option>` : ""}
+              <option value="Editor" selected>Editor</option>
+              <option value="Viewer">Viewer</option>
+            </select>
+          </div>
+        </div>
+      </form>
+    `,
+    footHtml: `<button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn" onclick="document.getElementById('tokenForm').requestSubmit()">Create Token</button>`,
+  });
+}
+
+async function saveToken(event) {
+  event.preventDefault();
+  try {
+    const res = await api("/api/auth/tokens", "POST", {
+      name: $("tokName").value,
+      role: $("tokRole").value,
+    });
+    openModal({
+      title: "Token Created — Copy It Now",
+      bodyHtml: `
+        <p style="margin-top:0;font-size:13.5px;">This is the only time the full token is shown:</p>
+        <textarea readonly style="font-family:var(--font-mono);min-height:70px;" onclick="this.select()">${escapeHtml(res.token)}</textarea>
+        <div class="field-hint" style="margin-top:8px;">Scope: <strong>${escapeHtml(res.role)}</strong>${res.name ? ` · Name: <strong>${escapeHtml(res.name)}</strong>` : ""}. Use it as <span class="kbd">Authorization: Bearer &lt;token&gt;</span>; Bearer requests don't need the CSRF header.</div>
+      `,
+      footHtml: `<button class="btn" onclick="closeModal();loadTokens()">Done</button>`,
+    });
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+function revokeToken(id) {
+  confirmModal("Revoke this token? Any automation using it will immediately lose access.", async () => {
+    await apiAction(() => api(`/api/auth/tokens/${id}`, "DELETE"), "Token revoked");
+    loadTokens();
+  });
+}
+
+/* =========================================================================
    DEBT PAYOFF, FORECAST, ALLOWANCES, CSV IMPORT, RESTORE
    ========================================================================= */
 
@@ -4279,22 +4527,31 @@ async function loadDebtPayoff() {
   const sb = data.snowball || { months: 0, total_interest: 0 };
   const av = data.avalanche || { months: 0, total_interest: 0 };
 
+  const strategyCard = (icon, title, subtitle, s) => `
+    <div class="card card-pad" style="background:var(--paper-alt);">
+      <h4>${icon} ${title}</h4>
+      ${s.will_never_be_paid_off
+        ? `<div class="pill danger" style="margin:8px 0;">May never be paid off at these payment levels</div>`
+        : `<div style="font-size:14px;margin-top:8px;">Time to Debt-Free: <strong>${s.years} years (${s.months} months)</strong></div>`}
+      <div style="font-size:14px;">Total Interest Paid: <strong>${fmtMoney(s.total_interest, { plain: true })}</strong></div>
+      ${s.warning ? `<div class="field-hint" style="margin-top:6px;color:var(--rust);">${escapeHtml(s.warning)}</div>` : ""}
+    </div>
+  `;
+
   $("debtPayoffContent").innerHTML = `
     <div class="grid cols-2" style="margin-bottom:20px;">
-      <div class="card card-pad" style="background:var(--paper-alt);">
-        <h4>❄️ Snowball Strategy (Smallest Balance First)</h4>
-        <div style="font-size:14px;margin-top:8px;">Time to Debt-Free: <strong>${sb.years} years (${sb.months} months)</strong></div>
-        <div style="font-size:14px;">Total Interest Paid: <strong>${fmtMoney(sb.total_interest, { plain: true })}</strong></div>
-      </div>
-      <div class="card card-pad" style="background:var(--paper-alt);">
-        <h4>🏔️ Avalanche Strategy (Highest Interest Rate First)</h4>
-        <div style="font-size:14px;margin-top:8px;">Time to Debt-Free: <strong>${av.years} years (${av.months} months)</strong></div>
-        <div style="font-size:14px;">Total Interest Paid: <strong>${fmtMoney(av.total_interest, { plain: true })}</strong></div>
-      </div>
+      ${strategyCard("❄️", "Snowball Strategy (Smallest Balance First)", "", sb)}
+      ${strategyCard("🏔️", "Avalanche Strategy (Highest Interest Rate First)", "", av)}
     </div>
+    ${(sb.will_never_be_paid_off || av.will_never_be_paid_off) ? `
+      <div class="card card-pad" style="border-color:var(--rust);margin-bottom:20px;background:var(--rust-pale);">
+        <strong>⚠️ Payoff warning</strong>
+        <div class="field-hint" style="color:var(--ink-soft);">Monthly interest exceeds the payments for at least one debt. Increase the extra payment or the account's configured minimum payment — minimums of $0 are honored as-is.</div>
+      </div>
+    ` : ""}
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Debt Account</th><th>Type</th><th>Balance</th><th>Interest Rate</th><th>Min. Payment</th></tr></thead>
+        <thead><tr><th scope="col">Debt Account</th><th scope="col">Type</th><th scope="col">Balance</th><th scope="col">Interest Rate</th><th scope="col">Min. Payment</th></tr></thead>
         <tbody>
           ${data.debts.map((d) => `
             <tr>
@@ -4325,21 +4582,27 @@ async function loadForecast() {
   }));
 
   $("forecastContent").innerHTML = `
-    <div class="grid cols-3" style="margin-bottom:20px;">
+    <div class="grid cols-2" style="margin-bottom:20px;">
       <div class="card stat-card"><div class="label">Current Net Worth</div><div class="value">${fmtMoney(data.current_net_worth, { plain: true })}</div></div>
       <div class="card stat-card"><div class="label">90-Day Avg. Income</div><div class="value amt-pos">${fmtMoney(data.historical_monthly_income, { plain: true })}</div></div>
       <div class="card stat-card"><div class="label">90-Day Avg. Outflow</div><div class="value amt-neg">${fmtMoney(data.historical_monthly_expense, { plain: true })}</div></div>
+      <div class="card stat-card">
+        <div class="label">Recurring Schedules</div>
+        <div class="value ${((data.recurring_monthly_income || 0) - (data.recurring_monthly_outflow || 0)) >= 0 ? 'amt-pos' : 'amt-neg'}">${fmtMoney((data.recurring_monthly_income || 0) - (data.recurring_monthly_outflow || 0), { plain: true })}/mo</div>
+        <div class="delta">${data.recurring_rule_count || 0} active rule(s) · ${fmtMoney(data.scheduled_bills_total || 0, { plain: true })} in scheduled bill balances</div>
+      </div>
     </div>
     <div style="margin-bottom:20px;">${groupedBarChart(chartData, { height: 220, width: 800 })}</div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Month</th><th class="right">Est. Income</th><th class="right">Est. Expenses</th><th class="right">Est. Net Change</th><th class="right">Projected Net Worth</th></tr></thead>
+        <thead><tr><th scope="col">Month</th><th scope="col" class="right">Est. Income</th><th scope="col" class="right">Est. Expenses</th><th scope="col" class="right">Scheduled Bills</th><th scope="col" class="right">Est. Net Change</th><th scope="col" class="right">Projected Net Worth</th></tr></thead>
         <tbody>
           ${data.projection.map((p) => `
             <tr>
               <td>${p.month}</td>
               <td class="right amt-pos">${fmtMoney(p.estimated_income, { plain: true })}</td>
               <td class="right amt-neg">${fmtMoney(p.estimated_expense, { plain: true })}</td>
+              <td class="right num">${p.scheduled_bills ? fmtMoney(p.scheduled_bills, { neutral: true }) : "—"}</td>
               <td class="right ${p.estimated_net_change >= 0 ? 'amt-pos' : 'amt-neg'}">${fmtMoney(p.estimated_net_change, { plain: true })}</td>
               <td class="right font-bold">${fmtMoney(p.projected_net_worth, { plain: true })}</td>
             </tr>
@@ -4359,12 +4622,12 @@ async function loadAllowances() {
 
   $("allowancesTable").innerHTML = items.length ? `
     <table>
-      <thead><tr><th>Member</th><th>Allowance</th><th>Frequency</th><th>Spent This Month</th><th>Remaining</th><th></th></tr></thead>
+      <thead><tr><th scope="col">Member</th><th scope="col">Allowance</th><th scope="col">Frequency</th><th scope="col">Spent This Month</th><th scope="col">Remaining</th><th scope="col"></th></tr></thead>
       <tbody>
         ${items.map((a) => `
           <tr>
             <td>${escapeHtml(a.member_name)}</td>
-            <td>${fmtMoney(a.amount, { neutral: true })}</td>
+            <td>${fmtMoney(a.amount, { neutral: true })}${a.frequency === "weekly" && a.monthly_equivalent ? ` <span class="field-hint">(≈ ${fmtMoney(a.monthly_equivalent, { plain: true })}/mo)</span>` : ""}</td>
             <td style="text-transform:capitalize;">${escapeHtml(a.frequency)}</td>
             <td class="amt-neg">${fmtMoney(a.spent_this_month, { plain: true })}</td>
             <td class="${a.remaining_this_month >= 0 ? 'amt-pos' : 'amt-neg'}">${fmtMoney(a.remaining_this_month, { plain: true })}</td>
@@ -4458,7 +4721,7 @@ function openCsvImportModal(targetType) {
     bodyHtml: `
       <div>
         <div class="field"><label>Select Bank CSV File</label><input type="file" id="csvFileInput" accept=".csv" /></div>
-        <button class="btn secondary small" style="margin-top:10px;" onclick="previewCsvImport('${targetType}')">Preview CSV</button>
+        <button class="btn secondary small" style="margin-top:10px;" onclick="previewCsvImport('${targetType}')">Preview &amp; Map Columns</button>
         <div id="csvPreviewArea" style="margin-top:16px;"></div>
       </div>
     `,
@@ -4466,7 +4729,145 @@ function openCsvImportModal(targetType) {
   });
 }
 
-let csvImportRows = [];
+// CSV import state: raw rows plus the user's column mapping.
+let csvImport = {
+  targetType: "expense",
+  headers: [],
+  rows: [],
+  mapping: { date: -1, title: -1, amount: -1, category: -1, notes: -1 },
+  dateFormat: "auto",
+  account: "",
+};
+
+const CSV_TARGET_FIELDS = [
+  { key: "date", label: "Date *", required: true, keywords: ["date", "posted", "transaction"] },
+  { key: "title", label: "Description *", required: true, keywords: ["desc", "payee", "name", "memo", "details", "title", "merchant"] },
+  { key: "amount", label: "Amount *", required: true, keywords: ["amount", "value", "total", "sum", "debit", "credit"] },
+  { key: "category", label: "Category", required: false, keywords: ["category", "type"] },
+  { key: "notes", label: "Notes", required: false, keywords: ["memo", "note", "notes", "comment"] },
+];
+
+function guessCsvColumn(headers, field) {
+  // Prefer an exact header match before falling back to substring matches.
+  const exact = { date: "date", title: "description", amount: "amount", category: "category", notes: "notes" }[field.key];
+  const lower = headers.map((h) => h.toLowerCase());
+  let idx = exact ? lower.indexOf(exact) : -1;
+  if (idx >= 0) return idx;
+  for (const kw of field.keywords) {
+    idx = lower.findIndex((h) => h.includes(kw));
+    if (idx >= 0) return idx;
+  }
+  return -1;
+}
+
+function csvMappingHtml() {
+  const headerOptions = (selected) => {
+    let out = `<option value="-1">— Skip column —</option>`;
+    csvImport.headers.forEach((h, i) => {
+      out += `<option value="${i}" ${selected === i ? "selected" : ""}>${escapeHtml(h)}</option>`;
+    });
+    return out;
+  };
+
+  const fields = CSV_TARGET_FIELDS.map((f) => `
+    <div class="field">
+      <label>${escapeHtml(f.label)}</label>
+      <select id="csvMap_${f.key}" onchange="onCsvMappingChange()">${headerOptions(csvImport.mapping[f.key])}</select>
+    </div>
+  `).join("");
+
+  const dateFormats = `
+    <div class="field">
+      <label>Date Format</label>
+      <select id="csvDateFormat" onchange="onCsvMappingChange()">
+        <option value="auto" ${csvImport.dateFormat === "auto" ? "selected" : ""}>Auto-detect</option>
+        <option value="ymd" ${csvImport.dateFormat === "ymd" ? "selected" : ""}>YYYY-MM-DD</option>
+        <option value="mdy" ${csvImport.dateFormat === "mdy" ? "selected" : ""}>MM/DD/YYYY (US)</option>
+        <option value="dmy" ${csvImport.dateFormat === "dmy" ? "selected" : ""}>DD/MM/YYYY (Intl)</option>
+      </select>
+    </div>
+  `;
+
+  const accountField = `
+    <div class="field">
+      <label>Assign to Account</label>
+      <select id="csvAccountSelect" onchange="onCsvMappingChange()">${accountOptions(csvImport.account)}</select>
+    </div>
+  `;
+
+  return `
+    <div class="form-grid" style="margin-bottom:6px;">${fields}${dateFormats}${accountField}</div>
+    <p class="field-hint">Amounts are imported as positive values; the sign is ignored.</p>
+    <div id="csvMappedPreview" style="margin-top:10px;"></div>
+  `;
+}
+
+// Normalize a mapped date cell to ISO according to the chosen format. "Auto"
+// leaves the value untouched — the server accepts common bank formats too.
+function normalizeCsvDate(raw, fmt) {
+  const s = String(raw || "").trim();
+  if (!s || fmt === "auto" || !fmt) return s;
+  const m = s.match(/^(\d{1,4})[\/.\-](\d{1,2})[\/.\-](\d{1,4})$/);
+  if (!m) return s;
+  const pad = (n) => n.padStart(2, "0");
+  if (m[1].length === 4) return `${m[1]}-${pad(m[2])}-${pad(m[3])}`; // already year-first
+  if (fmt === "mdy") return `${m[3]}-${pad(m[1])}-${pad(m[2])}`;
+  if (fmt === "dmy") return `${m[3]}-${pad(m[2])}-${pad(m[1])}`;
+  if (fmt === "ymd") return `${m[1]}-${pad(m[2])}-${pad(m[3])}`;
+  return s;
+}
+
+function readCsvMappingFromUi() {
+  CSV_TARGET_FIELDS.forEach((f) => {
+    const sel = $(`csvMap_${f.key}`);
+    if (sel) csvImport.mapping[f.key] = parseInt(sel.value, 10);
+    if (!sel || Number.isNaN(csvImport.mapping[f.key])) csvImport.mapping[f.key] = -1;
+  });
+  const df = $("csvDateFormat");
+  if (df) csvImport.dateFormat = df.value;
+  const acc = $("csvAccountSelect");
+  if (acc) csvImport.account = acc.value;
+}
+
+function onCsvMappingChange() {
+  readCsvMappingFromUi();
+  renderCsvMappedPreview();
+}
+
+function renderCsvMappedPreview() {
+  const wrap = $("csvMappedPreview");
+  if (!wrap) return;
+
+  const m = csvImport.mapping;
+  const missing = CSV_TARGET_FIELDS.filter((f) => f.required && m[f.key] < 0).map((f) => f.label);
+  const rows = csvImport.rows.slice(1, 6);
+
+  wrap.innerHTML = `
+    ${missing.length
+      ? `<div class="pill danger" style="margin-bottom:8px;">Unmapped required column(s): ${escapeHtml(missing.join(", "))}</div>`
+      : `<div class="pill success" style="margin-bottom:8px;">All required columns mapped</div>`}
+    <div class="table-wrap" style="max-height:180px;overflow-y:auto;border:1px solid var(--line);border-radius:9px;">
+      <table>
+        <thead><tr><th scope="col">Date</th><th scope="col">Description</th><th scope="col" class="right">Amount</th><th scope="col">Category</th><th scope="col">Notes</th></tr></thead>
+        <tbody>
+          ${rows.map((r) => {
+            const cell = (idx) => (idx >= 0 && idx < r.length ? r[idx] : "");
+            return `<tr>
+              <td>${escapeHtml(normalizeCsvDate(cell(m.date), csvImport.dateFormat) || "—")}</td>
+              <td class="wrap">${escapeHtml(cell(m.title) || "Imported Item")}</td>
+              <td class="right num">${escapeHtml(cell(m.amount) || "—")}</td>
+              <td>${escapeHtml(cell(m.category) || "Other")}</td>
+              <td class="wrap">${escapeHtml(cell(m.notes) || "")}</td>
+            </tr>`;
+          }).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  const commitBtn = $("csvCommitBtn");
+  if (commitBtn) commitBtn.disabled = missing.length > 0;
+}
 
 async function previewCsvImport(targetType) {
   const fileInput = $("csvFileInput");
@@ -4487,24 +4888,34 @@ async function previewCsvImport(targetType) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Preview failed");
 
-    csvImportRows = data.sample_rows;
     if (!data.total_rows || !data.sample_rows.length) {
       $("csvPreviewArea").innerHTML = `<div class="empty-state" style="padding:18px;"><div class="ic">📄</div><div class="t">No data rows found</div><div>The file has a header but no rows to import.</div></div>`;
       $("csvCommitBtn").disabled = true;
       return;
     }
-    $("csvPreviewArea").innerHTML = `
-      <div style="font-size:13px;margin-bottom:8px;">Found ${data.total_rows} total rows. Previewing first ${data.sample_rows.length}:</div>
-      <div class="table-wrap" style="max-height:200px;overflow-y:auto;">
-        <table>
-          <thead><tr>${data.headers.map((h) => `<th>${escapeHtml(h)}</th>`).join("")}</tr></thead>
-          <tbody>
-            ${data.sample_rows.map((r) => `<tr>${r.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`).join("")}
-          </tbody>
-        </table>
-      </div>
-    `;
-    $("csvCommitBtn").disabled = false;
+
+    // Parse locally so the full file (not just the preview sample) can be
+    // mapped and committed with the user's column assignments.
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const rows = parseCsv(e.target.result);
+      if (rows.length < 2) {
+        toast("No data rows found in the CSV file", "error");
+        return;
+      }
+
+      csvImport.targetType = targetType;
+      csvImport.headers = rows[0];
+      csvImport.rows = rows;
+      CSV_TARGET_FIELDS.forEach((f) => { csvImport.mapping[f.key] = guessCsvColumn(csvImport.headers, f); });
+
+      $("csvPreviewArea").innerHTML = `
+        <div style="font-size:13px;margin-bottom:8px;">Found ${data.total_rows} total rows. Map each column, then review the preview:</div>
+        ${csvMappingHtml()}
+      `;
+      renderCsvMappedPreview();
+    };
+    reader.readAsText(fileInput.files[0]);
   } catch (err) {
     toast(err.message, "error");
   }
@@ -4549,55 +4960,63 @@ function parseCsvLine(text) {
 }
 
 async function commitCsvImport(targetType) {
-  const fileInput = $("csvFileInput");
-  if (!fileInput.files[0]) return;
+  if (!csvImport.rows.length) {
+    toast("Preview and map the CSV file first", "error");
+    return;
+  }
 
-  const reader = new FileReader();
-  reader.onload = async (e) => {
-    const rows = parseCsv(e.target.result);
-    if (rows.length < 2) {
-      toast("No data rows found in the CSV file", "error");
-      return;
-    }
+  const m = csvImport.mapping;
+  const missing = CSV_TARGET_FIELDS.filter((f) => f.required && m[f.key] < 0);
+  if (missing.length) {
+    toast(`Map the required column(s) first: ${missing.map((f) => f.label).join(", ")}`, "error");
+    return;
+  }
 
-    const headers = rows[0].map((h) => h.toLowerCase());
-    const dateIdx = headers.findIndex((h) => h.includes("date"));
-    const descIdx = headers.findIndex((h) => h.includes("desc") || h.includes("payee") || h.includes("name") || h.includes("title"));
-    const amtIdx = headers.findIndex((h) => h.includes("amount") || h.includes("total") || h.includes("sum"));
+  const cell = (row, idx) => (idx >= 0 && idx < row.length ? row[idx] : "");
 
-    const items = [];
-    let skipped = 0;
-    for (let i = 1; i < rows.length; i++) {
-      const parts = rows[i];
-      if (parts.length < 2) continue;
+  const items = [];
+  let skipped = 0;
+  for (let i = 1; i < csvImport.rows.length; i++) {
+    const parts = csvImport.rows[i];
+    if (parts.length < 2 && !cell(parts, m.amount)) continue;
 
-      const rawAmt = Math.abs(parseFloat(parts[amtIdx >= 0 ? amtIdx : 1] || 0));
-      if (!rawAmt || Number.isNaN(rawAmt)) { skipped++; continue; }
+    const rawAmt = Math.abs(parseFloat(cell(parts, m.amount)) || 0);
+    if (!rawAmt || Number.isNaN(rawAmt)) { skipped++; continue; }
 
-      items.push({
-        title: parts[descIdx >= 0 ? descIdx : 0] || "Imported Item",
-        amount: rawAmt,
-        date: parts[dateIdx >= 0 ? dateIdx : 0] || todayIso(),
-        category: "Other",
-      });
-    }
+    const item = {
+      title: cell(parts, m.title) || "Imported Item",
+      amount: rawAmt,
+      date: normalizeCsvDate(cell(parts, m.date), csvImport.dateFormat) || todayIso(),
+      category: cell(parts, m.category) || "Other",
+    };
+    const notes = cell(parts, m.notes);
+    if (notes) item.notes = notes;
+    if (csvImport.account) item.account_id = csvImport.account;
 
-    if (!items.length) {
-      toast("No importable rows found — check the amount column", "error");
-      return;
-    }
+    items.push(item);
+  }
 
-    try {
-      const res = await api("/api/import/csv/commit", "POST", { target_type: targetType, items });
-      closeModal();
-      toast(`Successfully imported ${res.imported_count} records${skipped ? ` (${skipped} row(s) skipped)` : ""}`, "success");
-      if (targetType === "expense") loadExpenses(0);
-      else loadIncome(0);
-    } catch (err) {
-      toast(err.message, "error");
-    }
-  };
-  reader.readAsText(fileInput.files[0]);
+  if (!items.length) {
+    toast("No importable rows found — check the amount column", "error");
+    return;
+  }
+
+  try {
+    const res = await api("/api/import/csv/commit", "POST", { target_type: targetType, items });
+    closeModal();
+    csvImport = { targetType, headers: [], rows: [], mapping: { date: -1, title: -1, amount: -1, category: -1, notes: -1 }, dateFormat: "auto", account: "" };
+    const failedCount = (res.failed || []).length;
+    toast(
+      `Imported ${res.imported_count} record(s)` +
+      (failedCount ? `, ${failedCount} row(s) failed` : "") +
+      (skipped ? ` (${skipped} empty row(s) skipped)` : ""),
+      failedCount ? "info" : "success"
+    );
+    if (targetType === "expense") loadExpenses(0);
+    else loadIncome(0);
+  } catch (err) {
+    toast(err.message, "error");
+  }
 }
 
 function openRestoreModal() {
@@ -4606,6 +5025,7 @@ function openRestoreModal() {
     bodyHtml: `
       <div>
         <p class="muted" style="margin-top:0;font-size:13px;">Upload a previously downloaded <span class="kbd">.db</span> backup file to replace the active database.</p>
+        <p class="muted" style="font-size:13px;"><strong>Note:</strong> after a restore, restart the FamilyFinance process so every worker drops stale database connections. Backup files contain password hashes — store them as carefully as credentials.</p>
         <div class="field"><label>Select Backup File (.db)</label><input type="file" id="restoreFileInput" accept=".db" /></div>
       </div>
     `,

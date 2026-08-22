@@ -34,6 +34,7 @@ import csv
 import io
 import re
 import os
+import hashlib
 import html
 import secrets
 import time
@@ -175,6 +176,7 @@ CREATE TABLE IF NOT EXISTS expense_splits (
     category TEXT NOT NULL,
     amount_cents INTEGER NOT NULL,
     member TEXT DEFAULT '',
+    member_id INTEGER REFERENCES members(id) ON DELETE SET NULL,
     notes TEXT DEFAULT ''
 );
 
@@ -184,6 +186,7 @@ CREATE TABLE IF NOT EXISTS income_splits (
     category TEXT NOT NULL,
     amount_cents INTEGER NOT NULL,
     member TEXT DEFAULT '',
+    member_id INTEGER REFERENCES members(id) ON DELETE SET NULL,
     notes TEXT DEFAULT ''
 );
 
@@ -265,8 +268,12 @@ CREATE TABLE IF NOT EXISTS expenses (
     receipt_ref TEXT DEFAULT '',
     notes TEXT DEFAULT '',
     member TEXT DEFAULT '',
+    member_id INTEGER REFERENCES members(id) ON DELETE SET NULL,
     account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
     tags TEXT DEFAULT '',
+    original_currency TEXT DEFAULT '',
+    exchange_rate REAL DEFAULT 0.0,
+    original_amount_cents INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     is_deleted INTEGER NOT NULL DEFAULT 0
@@ -281,8 +288,12 @@ CREATE TABLE IF NOT EXISTS income (
     source TEXT DEFAULT '',
     notes TEXT DEFAULT '',
     member TEXT DEFAULT '',
+    member_id INTEGER REFERENCES members(id) ON DELETE SET NULL,
     account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
     tags TEXT DEFAULT '',
+    original_currency TEXT DEFAULT '',
+    exchange_rate REAL DEFAULT 0.0,
+    original_amount_cents INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     is_deleted INTEGER NOT NULL DEFAULT 0
@@ -305,6 +316,7 @@ CREATE TABLE IF NOT EXISTS goals (
     target_cents INTEGER NOT NULL,
     current_cents INTEGER NOT NULL DEFAULT 0,
     target_date DATE,
+    allocation_pct REAL NOT NULL DEFAULT 0,
     notes TEXT DEFAULT '',
     is_active INTEGER NOT NULL DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -350,6 +362,17 @@ CREATE TABLE IF NOT EXISTS bill_sequences (
     next_number INTEGER NOT NULL DEFAULT 1
 );
 
+CREATE TABLE IF NOT EXISTS api_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL UNIQUE,
+    name TEXT DEFAULT '',
+    role TEXT NOT NULL DEFAULT 'Viewer' CHECK (role IN ('Admin', 'Editor', 'Viewer')),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_used_at TIMESTAMP,
+    revoked INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE INDEX IF NOT EXISTS idx_bills_status_due ON bills(status, due_date);
 CREATE INDEX IF NOT EXISTS idx_bills_payee ON bills(payee_id);
 CREATE INDEX IF NOT EXISTS idx_bills_created ON bills(created_at);
@@ -380,6 +403,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action);
 CREATE INDEX IF NOT EXISTS idx_notifications_created ON notifications(created_at);
 CREATE INDEX IF NOT EXISTS idx_notifications_username ON notifications(username, is_read);
+CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id);
 """
 
 MINIMAL_INDEX = """
@@ -458,6 +482,15 @@ class ValidationError(Exception):
 
 
 class RateLimiter:
+    """Fixed-window in-memory rate limiter.
+
+    NOTE: state lives in this process only. When running under multiple
+    worker processes (e.g. `gunicorn -w 4`), each worker enforces its own
+    table, which multiplies the effective limits. Run a single worker, put a
+    rate-limiting reverse proxy in front, or swap this class for a shared
+    store (Redis, etc.) when scaling out — see README "Rate Limiting".
+    """
+
     def __init__(self):
         self._lock = threading.Lock()
         self._store = {}
@@ -529,6 +562,40 @@ def parse_iso_date(value, field="date", allow_none=False):
         return datetime.strptime(str(value), "%Y-%m-%d").date().isoformat()
     except ValueError:
         raise ValidationError(f"{field} must be in YYYY-MM-DD format")
+
+
+# Common export date formats accepted by the CSV importer, most-specific
+# first. ISO wins so unambiguous input is never misread.
+FLEXIBLE_DATE_FORMATS = (
+    "%Y-%m-%d",
+    "%m/%d/%Y",
+    "%d/%m/%Y",
+    "%Y/%m/%d",
+    "%d.%m.%Y",
+    "%m-%d-%Y",
+)
+
+
+def parse_flexible_date(value, field="date"):
+    """Accept the small set of date formats real bank exports actually use.
+
+    ISO `YYYY-MM-DD` is tried first; US `MM/DD/YYYY` before international
+    `DD/MM/YYYY`, matching the dominant convention when both could parse.
+    """
+    if value in (None, ""):
+        raise ValidationError(f"{field} is required")
+
+    text = str(value).strip()
+
+    for fmt in FLEXIBLE_DATE_FORMATS:
+        try:
+            return datetime.strptime(text, fmt).date().isoformat()
+        except ValueError:
+            continue
+
+    raise ValidationError(
+        f"{field} must be a valid date (YYYY-MM-DD or MM/DD/YYYY)"
+    )
 
 
 def parse_number(value, field="value", minimum=None, maximum=None):
@@ -741,7 +808,10 @@ def create_app(test_config=None):
     config = {
         "SECRET_KEY": os.getenv("FF_SECRET_KEY", ""),
         "DATABASE": os.getenv("FF_DB_PATH", str(BASE_DIR / "familyfinance.db")),
-        "MAX_CONTENT_LENGTH": 5 * 1024 * 1024,
+        # Applies to every request body, including CSV imports and database
+        # restores. A multi-year family database can comfortably exceed the
+        # old hardcoded 5 MB, so this is configurable and defaults higher.
+        "MAX_CONTENT_LENGTH": int(os.getenv("FF_MAX_CONTENT_LENGTH_MB", "50")) * 1024 * 1024,
         "PERMANENT_SESSION_LIFETIME": timedelta(hours=int(os.getenv("FF_SESSION_HOURS", "8"))),
         "SESSION_COOKIE_HTTPONLY": True,
         "SESSION_COOKIE_SAMESITE": "Lax",
@@ -803,6 +873,14 @@ def create_app(test_config=None):
     def handle_429(e):
         return jsonify({"error": "Too many requests"}), 429
 
+    @app.errorhandler(413)
+    def handle_413(e):
+        limit_mb = app.config.get("MAX_CONTENT_LENGTH", 0) // (1024 * 1024)
+        return jsonify({
+            "error": f"Request body too large (limit: {limit_mb} MB). "
+            "Adjust FF_MAX_CONTENT_LENGTH_MB if you need to upload larger backups."
+        }), 413
+
     @app.errorhandler(500)
     def handle_500(e):
         app.logger.exception("Internal server error")
@@ -813,6 +891,18 @@ def create_app(test_config=None):
         resp.headers.setdefault("X-Content-Type-Options", "nosniff")
         resp.headers.setdefault("X-Frame-Options", "DENY")
         resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+
+        # The SPA uses inline handlers/styles and loads Google Fonts, so
+        # 'unsafe-inline' for scripts/styles plus explicit font/style origins
+        # is the pragmatic first-step policy.
+        resp.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "font-src 'self' data: https://fonts.gstatic.com; "
+            "img-src 'self' data:",
+        )
 
         if request.path.startswith("/api/"):
             resp.headers.setdefault("Cache-Control", "no-store")
@@ -848,20 +938,24 @@ def create_app(test_config=None):
             if not user:
                 return jsonify({"error": "Authentication required"}), 401
 
-            token = request.headers.get("X-CSRF-Token", "")
+            # Requests authenticated with a personal access token carry no
+            # session cookie, so CSRF (a cookie-authentication defense) does
+            # not apply to them.
+            if not g.get("auth_via_bearer", False):
+                token = request.headers.get("X-CSRF-Token", "")
 
-            if not token:
-                payload = json_payload()
-                token = payload.get("_csrf", "")
+                if not token:
+                    payload = json_payload()
+                    token = payload.get("_csrf", "")
 
-            expected = session.get("_csrf", "")
+                expected = session.get("_csrf", "")
 
-            if (
-                not token
-                or not expected
-                or not hmac.compare_digest(str(token), str(expected))
-            ):
-                return jsonify({"error": "CSRF validation failed"}), 403
+                if (
+                    not token
+                    or not expected
+                    or not hmac.compare_digest(str(token), str(expected))
+                ):
+                    return jsonify({"error": "CSRF validation failed"}), 403
 
         return None
 
@@ -877,11 +971,57 @@ def create_app(test_config=None):
 # Init / default data
 # ---------------------------------------------------------------------------
 
+def _ensure_column(conn, table, column_name, column_decl):
+    """Lightweight migration: add a column to an existing table if missing."""
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column_name not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column_decl}")
+
+
 def init_db():
+    if sqlite3.sqlite_version_info < (3, 35, 0):
+        raise RuntimeError(
+            f"FamilyFinance requires SQLite 3.35.0 or newer "
+            f"(found {sqlite3.sqlite_version}). The bill numbering sequence "
+            "relies on INSERT ... ON CONFLICT ... RETURNING. Upgrade the "
+            "system's libsqlite3 (or Python build) and try again."
+        )
+
     conn = get_db()
 
     with conn:
         conn.executescript(SCHEMA)
+
+    # Migrations for databases created before these columns existed.
+    with conn:
+        for table in ("expenses", "income"):
+            _ensure_column(conn, table, "member_id", "member_id INTEGER REFERENCES members(id) ON DELETE SET NULL")
+            _ensure_column(conn, table, "original_currency", "original_currency TEXT DEFAULT ''")
+            _ensure_column(conn, table, "exchange_rate", "exchange_rate REAL DEFAULT 0.0")
+            _ensure_column(conn, table, "original_amount_cents", "original_amount_cents INTEGER DEFAULT 0")
+
+        for table in ("expense_splits", "income_splits"):
+            _ensure_column(conn, table, "member_id", "member_id INTEGER REFERENCES members(id) ON DELETE SET NULL")
+
+        _ensure_column(conn, "goals", "allocation_pct", "allocation_pct REAL NOT NULL DEFAULT 0")
+
+    # Duplicate guards. Applied best-effort so legacy databases that already
+    # contain duplicates still boot; the application-level checks in the
+    # create/update endpoints enforce the same rule regardless.
+    with conn:
+        for statement in (
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_allowances_member_frequency "
+            "ON allowances(member_id, frequency)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_budgets_unique_active "
+            "ON budgets(category, member, period) WHERE is_active=1",
+        ):
+            try:
+                conn.execute(statement)
+            except sqlite3.DatabaseError:
+                current_app.logger.warning(
+                    "Could not create uniqueness index — resolve duplicate "
+                    "allowance/budget rows to enable database-level enforcement."
+                )
 
     ensure_default_settings()
     ensure_default_categories()
@@ -991,18 +1131,120 @@ def save_settings(data):
 # Auth / audit helpers
 # ---------------------------------------------------------------------------
 
-def get_current_user():
+# Roles are ordered so API tokens can be scoped to a role no stronger than
+# their owner's.
+ROLE_RANK = {"Viewer": 1, "Editor": 2, "Admin": 3}
+
+
+def hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _user_from_session():
     username = session.get("username")
 
     if not username:
         return None
 
-    conn = get_db()
-
-    return conn.execute(
+    row = get_db().execute(
         "SELECT id, username, role FROM users WHERE username=?",
         (username,),
     ).fetchone()
+
+    if not row:
+        return None
+
+    return {"id": row["id"], "username": row["username"], "role": row["role"]}
+
+
+def _user_from_bearer_token():
+    """Resolve `Authorization: Bearer <token>` personal access tokens."""
+    header = request.headers.get("Authorization", "")
+
+    if not header.startswith("Bearer "):
+        return None
+
+    token = header[len("Bearer "):].strip()
+
+    # A presented Bearer credential is authoritative: an invalid one must
+    # not silently fall back to the session cookie.
+    g.auth_via_bearer = True
+
+    if not token:
+        return None
+
+    row = get_db().execute(
+        """
+        SELECT t.id AS token_id, t.role AS token_role, t.last_used_at,
+               u.id AS user_id, u.username, u.role AS user_role
+        FROM api_tokens t
+        JOIN users u ON u.id = t.user_id
+        WHERE t.token_hash=? AND t.revoked=0
+        """,
+        (hash_token(token),),
+    ).fetchone()
+
+    if not row:
+        return None
+
+    # Throttle last-used writes to at most one per minute per token.
+    try:
+        last_used = datetime.fromisoformat(row["last_used_at"]) if row["last_used_at"] else None
+    except (TypeError, ValueError):
+        last_used = None
+
+    if last_used is None or (datetime.now(timezone.utc).replace(tzinfo=None) - last_used).total_seconds() > 60:
+        try:
+            conn = get_db()
+            already_in_transaction = conn.in_transaction
+            conn.execute(
+                "UPDATE api_tokens SET last_used_at=CURRENT_TIMESTAMP WHERE id=?",
+                (row["token_id"],),
+            )
+            if not already_in_transaction:
+                conn.commit()
+        except Exception:
+            current_app.logger.exception("Updating token last_used_at failed")
+
+    # A token can never grant a stronger role than its owning user has now.
+    effective_role = min(
+        (row["user_role"], row["token_role"]),
+        key=lambda r: ROLE_RANK.get(r, 0),
+    )
+
+    return {
+        "id": row["user_id"],
+        "username": row["username"],
+        "role": effective_role,
+        "token_id": row["token_id"],
+    }
+
+
+def get_current_user():
+    """Return the authenticated user for this request.
+
+    The result is cached on `g` so the global guard and the per-route
+    decorators share a single database lookup per request instead of each
+    re-querying the users table.
+    """
+    if "user" in g:
+        return g.user
+
+    user = None
+    g.auth_via_bearer = False
+
+    if request.headers.get("Authorization", "").startswith("Bearer "):
+        user = _user_from_bearer_token()
+
+        if user is not None:
+            g.auth_via_bearer = True
+    else:
+        user = _user_from_session()
+
+    if user is not None:
+        g.user = user
+
+    return user
 
 
 def generate_csrf_token():
@@ -1053,6 +1295,10 @@ def audit(action, entity_type="", entity_id="", details=""):
         conn = get_db()
         already_in_transaction = conn.in_transaction
 
+        actor = session.get("username")
+        if not actor and g.get("user"):
+            actor = g.user["username"]
+
         conn.execute(
             """
             INSERT INTO audit_logs (
@@ -1066,7 +1312,7 @@ def audit(action, entity_type="", entity_id="", details=""):
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                session.get("username", "anonymous"),
+                actor or "anonymous",
                 action,
                 entity_type,
                 str(entity_id),
@@ -1102,7 +1348,7 @@ def notify(title, body="", link="", username=""):
 # Money / transaction helpers
 # ---------------------------------------------------------------------------
 
-def ensure_reference_exists(conn, table, row_id, field_name):
+def ensure_reference_exists(conn, table, row_id, field_name, require_active=False):
     if row_id in (None, ""):
         return None
 
@@ -1114,14 +1360,86 @@ def ensure_reference_exists(conn, table, row_id, field_name):
     if clean_id <= 0:
         raise ValidationError(f"{field_name} is invalid")
 
-    row = conn.execute(f"SELECT 1 FROM {table} WHERE id=?", (clean_id,)).fetchone()
+    sql = f"SELECT 1 FROM {table} WHERE id=?"
+
+    row = conn.execute(sql, (clean_id,)).fetchone()
     if row is None:
         raise ValidationError(f"{field_name} does not exist")
+
+    # New records must reference *active* rows; existing records that point
+    # at a since-deactivated row keep rendering (that's why deletes are soft).
+    if require_active and not conn.execute(
+        f"{sql} AND is_active=1", (clean_id,)
+    ).fetchone():
+        raise ValidationError(f"{field_name} is inactive and cannot be referenced by new records")
 
     return clean_id
 
 
-def parse_transaction_payload(data, date_field):
+def resolve_member_reference(data, field_name="member", require_active=True):
+    """Resolve the legacy free-text `member` field and/or a `member_id`.
+
+    Returns (member_text, member_id_or_None). An explicit valid `member_id`
+    wins and its canonical name is used; otherwise the text is matched
+    case-insensitively against active members so typos that hit a real
+    member still link. Unmatched text stays as a display-only fallback.
+    """
+    conn = get_db()
+    member_text = str(data.get(field_name) or "").strip()
+
+    raw_member_id = data.get("member_id")
+    if raw_member_id not in (None, ""):
+        member_id = ensure_reference_exists(
+            conn, "members", raw_member_id, "member_id", require_active=require_active
+        )
+        row = conn.execute(
+            "SELECT name FROM members WHERE id=?", (member_id,)
+        ).fetchone()
+        return (row["name"] if row else member_text), member_id
+
+    if member_text:
+        sql = "SELECT id, name FROM members WHERE name=? COLLATE NOCASE"
+        if require_active:
+            sql += " AND is_active=1"
+        row = conn.execute(sql, (member_text,)).fetchone()
+        if row:
+            return row["name"], row["id"]
+
+    return member_text, None
+
+
+def _parse_fx_fields(data):
+    """Parse optional multi-currency fields (settling to the primary currency).
+
+    `amount_cents` always stays the settled amount in the household's primary
+    currency; the original currency/rate/original value are stored for
+    reference and reporting.
+    """
+    original_currency = str(data.get("original_currency") or "").strip().upper()[:3]
+
+    if not original_currency:
+        return "", 0.0, 0
+
+    if not re.match(r"^[A-Z]{3}$", original_currency):
+        raise ValidationError("original_currency must be a 3-letter currency code")
+
+    exchange_rate = parse_number(data.get("exchange_rate", 0), "exchange_rate", minimum=0)
+    if exchange_rate <= 0:
+        raise ValidationError(
+            "exchange_rate must be greater than 0 when original_currency is set"
+        )
+
+    if "original_amount_cents" in data or "original_amount" in data:
+        original_amount_cents = parse_amount_from_data(
+            data, field="original_amount", allow_zero=True
+        )
+    else:
+        original_amount_cents = 0
+
+    return original_currency, exchange_rate, original_amount_cents
+
+
+def parse_transaction_payload(data, date_field, require_active_refs=False):
     title = str(data.get("title") or "").strip()
 
     if not title:
@@ -1131,10 +1449,17 @@ def parse_transaction_payload(data, date_field):
     amount_cents = parse_amount_from_data(data, "amount")
 
     category = str(data.get("category") or "Other").strip() or "Other"
-    member = str(data.get("member") or "").strip()
     notes = str(data.get("notes") or "").strip()
-    account_id = ensure_reference_exists(get_db(), "accounts", data.get("account_id"), "account_id")
+    account_id = ensure_reference_exists(
+        get_db(),
+        "accounts",
+        data.get("account_id"),
+        "account_id",
+        require_active=require_active_refs,
+    )
+    member, member_id = resolve_member_reference(data, require_active=require_active_refs)
     tags = data.get("tags") or ""
+    original_currency, exchange_rate, original_amount_cents = _parse_fx_fields(data)
 
     if isinstance(tags, list):
         tags = ",".join(str(t).strip() for t in tags if str(t).strip())
@@ -1147,14 +1472,88 @@ def parse_transaction_payload(data, date_field):
         "amount_cents": amount_cents,
         "date": transaction_date,
         "member": member,
+        "member_id": member_id,
         "notes": notes,
         "account_id": account_id,
         "tags": tags,
+        "original_currency": original_currency,
+        "exchange_rate": exchange_rate,
+        "original_amount_cents": original_amount_cents,
     }
 
 
-def insert_expense(conn, data):
-    payload = parse_transaction_payload(data, "expense_date")
+def apply_goal_auto_allocations(conn, amount_cents):
+    """Sinking-fund style auto-allocation.
+
+    Splits a freshly recorded income deposit across every active goal with an
+    `allocation_pct > 0`, crediting round(amount * pct / 100) cents to each.
+    Returns a list of applied contributions for reporting/notifications.
+    """
+    applied = []
+
+    rows = conn.execute(
+        "SELECT id, name, allocation_pct FROM goals WHERE is_active=1 AND allocation_pct > 0"
+    ).fetchall()
+
+    for row in rows:
+        contribution_cents = int(
+            (
+                Decimal(int(amount_cents))
+                * Decimal(str(row["allocation_pct"]))
+                / Decimal("100")
+            ).to_integral_value(rounding=ROUND_HALF_UP)
+        )
+
+        if contribution_cents <= 0:
+            continue
+
+        conn.execute(
+            "UPDATE goals SET current_cents = current_cents + ? WHERE id=?",
+            (contribution_cents, row["id"]),
+        )
+        applied.append({
+            "goal_id": row["id"],
+            "goal": row["name"],
+            "amount_cents": contribution_cents,
+        })
+        notify(
+            title=f"Auto-allocated {fmt_cents(contribution_cents)} to '{row['name']}'",
+            body=f"{row['allocation_pct']:g}% of an income deposit was routed to this sinking fund.",
+            link="/api/goals",
+        )
+
+    return applied
+
+
+def _resolve_split_member(data, default_member, default_member_id):
+    """Resolve a single split's member (id wins, then name, then parent)."""
+    if data.get("member_id") not in (None, ""):
+        member_id = ensure_reference_exists(
+            get_db(), "members", data.get("member_id"), "member_id"
+        )
+        row = get_db().execute(
+            "SELECT name FROM members WHERE id=?", (member_id,)
+        ).fetchone()
+        return (row["name"] if row else str(data.get("member") or "").strip()), member_id
+
+    member_text = str(data.get("member") if data.get("member") is not None else default_member or "").strip()
+    if not member_text and default_member:
+        member_text = default_member
+
+    if member_text:
+        row = get_db().execute(
+            "SELECT id, name FROM members WHERE name=? COLLATE NOCASE AND is_active=1",
+            (member_text,),
+        ).fetchone()
+        if row:
+            return row["name"], row["id"]
+        return member_text, default_member_id if (default_member and member_text == default_member) else None
+
+    return "", None
+
+
+def insert_expense(conn, data, require_active_refs=False):
+    payload = parse_transaction_payload(data, "expense_date", require_active_refs=require_active_refs)
     splits = data.get("splits") or []
 
     if splits and isinstance(splits, list):
@@ -1176,9 +1575,13 @@ def insert_expense(conn, data):
             receipt_ref,
             notes,
             member,
+            member_id,
             account_id,
-            tags
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            tags,
+            original_currency,
+            exchange_rate,
+            original_amount_cents
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             payload["title"],
@@ -1189,8 +1592,12 @@ def insert_expense(conn, data):
             str(data.get("receipt_ref") or "").strip(),
             payload["notes"],
             payload["member"],
+            payload["member_id"],
             payload["account_id"],
             payload["tags"],
+            payload["original_currency"],
+            payload["exchange_rate"],
+            payload["original_amount_cents"],
         ),
     )
 
@@ -1198,16 +1605,20 @@ def insert_expense(conn, data):
 
     if splits and isinstance(splits, list):
         for s in splits:
+            s_member, s_member_id = _resolve_split_member(
+                s, payload["member"], payload["member_id"]
+            )
             conn.execute(
                 """
-                INSERT INTO expense_splits (expense_id, category, amount_cents, member, notes)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO expense_splits (expense_id, category, amount_cents, member, member_id, notes)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     expense_id,
                     str(s.get("category") or payload["category"]).strip() or "Other",
                     parse_amount_from_data(s, "amount"),
-                    str(s.get("member") or payload["member"]).strip(),
+                    s_member,
+                    s_member_id,
                     str(s.get("notes") or "").strip(),
                 ),
             )
@@ -1215,8 +1626,8 @@ def insert_expense(conn, data):
     return expense_id
 
 
-def insert_income(conn, data):
-    payload = parse_transaction_payload(data, "income_date")
+def insert_income(conn, data, require_active_refs=False):
+    payload = parse_transaction_payload(data, "income_date", require_active_refs=require_active_refs)
     splits = data.get("splits") or []
 
     if splits and isinstance(splits, list):
@@ -1237,9 +1648,13 @@ def insert_income(conn, data):
             source,
             notes,
             member,
+            member_id,
             account_id,
-            tags
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            tags,
+            original_currency,
+            exchange_rate,
+            original_amount_cents
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             payload["title"],
@@ -1249,8 +1664,12 @@ def insert_income(conn, data):
             str(data.get("source") or "").strip(),
             payload["notes"],
             payload["member"],
+            payload["member_id"],
             payload["account_id"],
             payload["tags"],
+            payload["original_currency"],
+            payload["exchange_rate"],
+            payload["original_amount_cents"],
         ),
     )
 
@@ -1258,26 +1677,60 @@ def insert_income(conn, data):
 
     if splits and isinstance(splits, list):
         for s in splits:
+            s_member, s_member_id = _resolve_split_member(
+                s, payload["member"], payload["member_id"]
+            )
             conn.execute(
                 """
-                INSERT INTO income_splits (income_id, category, amount_cents, member, notes)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO income_splits (income_id, category, amount_cents, member, member_id, notes)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     income_id,
                     str(s.get("category") or payload["category"]).strip() or "Other",
                     parse_amount_from_data(s, "amount"),
-                    str(s.get("member") or payload["member"]).strip(),
+                    s_member,
+                    s_member_id,
                     str(s.get("notes") or "").strip(),
                 ),
             )
 
+    # Sinking funds: route a configured percentage of this deposit toward
+    # goals that opted into auto-allocation.
+    apply_goal_auto_allocations(conn, payload["amount_cents"])
+
     return income_id
 
 
-def parse_bill_payload(data):
+def parse_bill_payload(data, require_active_refs=False):
     payee_name = str(data.get("payee_name") or "").strip()
-    payee_id = data.get("payee_id") or None
+    payee_email = str(data.get("payee_email") or "").strip()
+    payee_address = str(data.get("payee_address") or "").strip()
+    raw_payee_id = data.get("payee_id") or None
+
+    # Always validate a supplied payee_id up front — even when a free-text
+    # payee_name is also present — so an invalid id surfaces as a clean 400
+    # instead of a foreign-key 500 at insert time.
+    if raw_payee_id not in (None, ""):
+        payee_id = ensure_reference_exists(
+            get_db(), "payees", raw_payee_id, "payee_id"
+        )
+        if not payee_name:
+            # Resolve the payee's stored details from the id so recurring
+            # rules and manual creation behave identically.
+            payee = get_db().execute(
+                "SELECT name, email, address FROM payees WHERE id=?",
+                (payee_id,),
+            ).fetchone()
+
+            if not payee:
+                raise ValidationError("payee_id does not exist")
+
+            payee_name = payee["name"]
+            payee_email = payee_email or payee["email"]
+            payee_address = payee_address or payee["address"]
+    else:
+        payee_id = None
 
     if not payee_name and not payee_id:
         raise ValidationError("payee_name or payee_id is required")
@@ -1292,7 +1745,13 @@ def parse_bill_payload(data):
 
     bill_category = str(data.get("bill_category") or "Other").strip() or "Other"
     notes = str(data.get("notes") or "").strip()
-    account_id = ensure_reference_exists(get_db(), "accounts", data.get("account_id"), "account_id")
+    account_id = ensure_reference_exists(
+        get_db(),
+        "accounts",
+        data.get("account_id"),
+        "account_id",
+        require_active=require_active_refs,
+    )
 
     items = data.get("items") or []
 
@@ -1357,8 +1816,8 @@ def parse_bill_payload(data):
     return {
         "payee_id": payee_id,
         "payee_name": payee_name,
-        "payee_email": str(data.get("payee_email") or "").strip(),
-        "payee_address": str(data.get("payee_address") or "").strip(),
+        "payee_email": payee_email,
+        "payee_address": payee_address,
         "bill_category": bill_category,
         "bill_date": bill_date,
         "due_date": due_date,
@@ -1663,6 +2122,13 @@ def register_routes(app):
         if not username or not password:
             return jsonify({"error": "Username and password are required"}), 400
 
+        # Second throttle keyed on the account itself: credential stuffing
+        # against one known username from many rotating IPs is still capped.
+        # Deliberately looser than the per-IP limit so a household sharing
+        # one account across devices isn't locked out by normal use.
+        if not RATE_LIMITER.allow(f"login:user:{username.lower()}", limit=30, window=300):
+            return jsonify({"error": "Too many login attempts"}), 429
+
         conn = get_db()
 
         user = conn.execute(
@@ -1718,6 +2184,104 @@ def register_routes(app):
     @api_login_required
     def csrf():
         return jsonify({"csrf_token": generate_csrf_token()})
+
+    # -----------------------------------------------------------------------
+    # Personal access tokens (Bearer auth for cron jobs / automations)
+    # -----------------------------------------------------------------------
+
+    @app.get("/api/auth/tokens")
+    @api_login_required
+    def tokens_list():
+        conn = get_db()
+
+        if g.user["role"] == "Admin":
+            rows = conn.execute(
+                """
+                SELECT t.id, t.name, t.role, t.created_at, t.last_used_at, t.revoked,
+                       u.username AS username
+                FROM api_tokens t JOIN users u ON u.id = t.user_id
+                ORDER BY t.id DESC
+                """
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT t.id, t.name, t.role, t.created_at, t.last_used_at, t.revoked,
+                       u.username AS username
+                FROM api_tokens t JOIN users u ON u.id = t.user_id
+                WHERE t.user_id=?
+                ORDER BY t.id DESC
+                """,
+                (g.user["id"],),
+            ).fetchall()
+
+        return jsonify(rows_to_list(rows))
+
+    @app.post("/api/auth/tokens")
+    @api_login_required
+    def token_create():
+        data = json_payload()
+
+        name = str(data.get("name") or "").strip()[:80]
+        requested_role = str(data.get("role") or g.user["role"]).strip()
+
+        if requested_role not in ROLE_RANK:
+            raise ValidationError("role must be Admin, Editor, or Viewer")
+
+        # A token can never outrank its creator.
+        if ROLE_RANK[requested_role] > ROLE_RANK[g.user["role"]]:
+            raise ValidationError("You cannot create a token with a stronger role than your own")
+
+        plain_token = f"ffpat_{secrets.token_urlsafe(32)}"
+
+        conn = get_db()
+
+        with conn:
+            cur = conn.execute(
+                """
+                INSERT INTO api_tokens (user_id, token_hash, name, role)
+                VALUES (?, ?, ?, ?)
+                """,
+                (g.user["id"], hash_token(plain_token), name, requested_role),
+            )
+
+        audit("token_created", "api_token", cur.lastrowid, name or requested_role)
+
+        # The plaintext token is shown exactly once — only its SHA-256 hash
+        # is stored.
+        return jsonify({
+            "success": True,
+            "id": cur.lastrowid,
+            "name": name,
+            "role": requested_role,
+            "token": plain_token,
+        })
+
+    @app.delete("/api/auth/tokens/<int:tid>")
+    @api_login_required
+    def token_revoke(tid):
+        conn = get_db()
+
+        row = conn.execute(
+            """
+            SELECT t.*, u.username FROM api_tokens t
+            JOIN users u ON u.id = t.user_id
+            WHERE t.id=?
+            """,
+            (tid,),
+        ).fetchone()
+
+        if not row:
+            return jsonify({"error": "Not found"}), 404
+
+        if row["user_id"] != g.user["id"] and g.user["role"] != "Admin":
+            return jsonify({"error": "Forbidden"}), 403
+
+        with conn:
+            conn.execute("UPDATE api_tokens SET revoked=1 WHERE id=?", (tid,))
+
+        audit("token_revoked", "api_token", tid, row["username"])
+        return jsonify({"success": True})
 
     @app.post("/api/auth/password")
     @api_login_required
@@ -2031,6 +2595,9 @@ def register_routes(app):
     @require_roles("Admin")
     def category_delete(cid):
         with get_db() as conn:
+            if not conn.execute("SELECT 1 FROM categories WHERE id=?", (cid,)).fetchone():
+                return jsonify({"error": "Not found"}), 404
+
             conn.execute("UPDATE categories SET is_active=0 WHERE id=?", (cid,))
 
         audit("category_deactivated", "category", cid)
@@ -2368,6 +2935,9 @@ def register_routes(app):
             raise ValidationError("Payee name is required")
 
         with get_db() as conn:
+            if not conn.execute("SELECT 1 FROM payees WHERE id=?", (pid,)).fetchone():
+                return jsonify({"error": "Not found"}), 404
+
             conn.execute(
                 """
                 UPDATE payees
@@ -2393,6 +2963,9 @@ def register_routes(app):
     @require_roles("Admin", "Editor")
     def payee_delete(pid):
         with get_db() as conn:
+            if not conn.execute("SELECT 1 FROM payees WHERE id=?", (pid,)).fetchone():
+                return jsonify({"error": "Not found"}), 404
+
             conn.execute("DELETE FROM payees WHERE id=?", (pid,))
 
         audit("payee_deleted", "payee", pid)
@@ -2493,22 +3066,13 @@ def register_routes(app):
     @require_roles("Admin", "Editor")
     def bill_create():
         data = json_payload()
-        payload = parse_bill_payload(data)
+
+        # parse_bill_payload validates payee_id and resolves payee_name (plus
+        # email/address fallbacks) from the id, so manual creation and
+        # recurring rules share one code path.
+        payload = parse_bill_payload(data, require_active_refs=True)
 
         with get_db() as conn:
-            if payload.get("payee_id") and not payload.get("payee_name"):
-                payee = conn.execute(
-                    "SELECT * FROM payees WHERE id=?",
-                    (payload["payee_id"],),
-                ).fetchone()
-
-                if not payee:
-                    raise ValidationError("payee_id does not exist")
-
-                payload["payee_name"] = payee["name"]
-                payload["payee_email"] = payload["payee_email"] or payee["email"]
-                payload["payee_address"] = payload["payee_address"] or payee["address"]
-
             if not payload["payee_name"]:
                 raise ValidationError("payee_name is required")
 
@@ -2722,19 +3286,6 @@ def register_routes(app):
 
         payload = parse_bill_payload(data)
 
-        if payload.get("payee_id") and not payload.get("payee_name"):
-            payee = conn.execute(
-                "SELECT * FROM payees WHERE id=?",
-                (payload["payee_id"],),
-            ).fetchone()
-
-            if not payee:
-                raise ValidationError("payee_id does not exist")
-
-            payload["payee_name"] = payee["name"]
-            payload["payee_email"] = payload["payee_email"] or payee["email"]
-            payload["payee_address"] = payload["payee_address"] or payee["address"]
-
         if not payload["payee_name"]:
             raise ValidationError("payee_name is required")
 
@@ -2824,6 +3375,9 @@ def register_routes(app):
     @require_roles("Admin", "Editor")
     def bill_delete(bid):
         with get_db() as conn:
+            if not conn.execute("SELECT 1 FROM bills WHERE id=?", (bid,)).fetchone():
+                return jsonify({"error": "Not found"}), 404
+
             conn.execute(
                 "UPDATE bills SET is_deleted=1 WHERE id=?",
                 (bid,),
@@ -2925,6 +3479,109 @@ def register_routes(app):
         audit("bill_payment_recorded", "bill", bid, str(amount_cents))
 
         return jsonify({"success": True})
+
+    @app.get("/api/bills/<int:bid>/payments")
+    @api_login_required
+    def bill_payments_list(bid):
+        conn = get_db()
+
+        if not conn.execute(
+            "SELECT 1 FROM bills WHERE id=? AND is_deleted=0", (bid,)
+        ).fetchone():
+            return jsonify({"error": "Not found"}), 404
+
+        rows = conn.execute(
+            """
+            SELECT bp.*, a.name AS account_name
+            FROM bill_payments bp
+            LEFT JOIN accounts a ON a.id = bp.account_id
+            WHERE bp.bill_id=?
+            ORDER BY bp.payment_date DESC, bp.id DESC
+            """,
+            (bid,),
+        ).fetchall()
+
+        items = rows_to_list(rows)
+
+        for item in items:
+            item["amount"] = cents_to_float(item["amount_cents"])
+
+        return jsonify({
+            "items": items,
+            "total_cents": sum(i["amount_cents"] for i in items),
+        })
+
+    @app.delete("/api/bills/<int:bid>/payments/<int:payment_id>")
+    @require_roles("Admin", "Editor")
+    def bill_payment_delete(bid, payment_id):
+        conn = get_db()
+
+        # Re-reading and recomputing under IMMEDIATE so a concurrent payment
+        # cannot slip in between the read and the recompute.
+        if not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+
+        try:
+            bill = conn.execute(
+                "SELECT * FROM bills WHERE id=? AND is_deleted=0",
+                (bid,),
+            ).fetchone()
+
+            if not bill:
+                conn.rollback()
+                return jsonify({"error": "Not found"}), 404
+
+            if bill["status"] == "Void":
+                raise ValidationError("Cannot modify payments on a void bill")
+
+            payment = conn.execute(
+                "SELECT * FROM bill_payments WHERE id=? AND bill_id=?",
+                (payment_id, bid),
+            ).fetchone()
+
+            if not payment:
+                conn.rollback()
+                return jsonify({"error": "Not found"}), 404
+
+            conn.execute("DELETE FROM bill_payments WHERE id=?", (payment_id,))
+
+            # Recompute paid_cents and status from the remaining payments.
+            remaining_paid = conn.execute(
+                "SELECT COALESCE(SUM(amount_cents), 0) FROM bill_payments WHERE bill_id=?",
+                (bid,),
+            ).fetchone()[0]
+
+            if remaining_paid >= bill["total_cents"]:
+                new_status = "Paid"
+                new_paid_at = bill["paid_at"] or datetime.now(timezone.utc).isoformat()
+            elif remaining_paid > 0:
+                new_status = "Partially Paid"
+                new_paid_at = None
+            else:
+                new_status = "Pending"
+                new_paid_at = None
+
+            conn.execute(
+                """
+                UPDATE bills
+                SET paid_cents=?, status=?, paid_at=?, updated_at=CURRENT_TIMESTAMP
+                WHERE id=?
+                """,
+                (remaining_paid, new_status, new_paid_at, bid),
+            )
+
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+        audit("bill_payment_deleted", "bill", bid, str(payment_id))
+
+        return jsonify({
+            "success": True,
+            "paid_cents": remaining_paid,
+            "status": new_status,
+        })
 
     @app.post("/api/bills/<int:bid>/void")
     @require_roles("Admin", "Editor")
@@ -3111,7 +3768,7 @@ def register_routes(app):
         data = json_payload()
 
         with get_db() as conn:
-            expense_id = insert_expense(conn, data)
+            expense_id = insert_expense(conn, data, require_active_refs=True)
 
         audit("expense_created", "expense", expense_id)
 
@@ -3163,17 +3820,39 @@ def register_routes(app):
             "amount": data.get("amount", cents_to_float(row["amount_cents"])),
             "category": data.get("category", row["category"]),
             "member": data.get("member", row["member"]),
+            "member_id": (
+                data["member_id"] if "member_id" in data
+                # An explicit member *name* re-resolves the link by name; keep
+                # the stored id only when the name was left untouched too.
+                else (row["member_id"] if "member" not in data else None)
+            ),
             "notes": data.get("notes", row["notes"]),
             "store": data.get("store", row["store"]),
             "receipt_ref": data.get("receipt_ref", row["receipt_ref"]),
             "tags": data.get("tags", row["tags"]),
             "account_id": data.get("account_id", row["account_id"]),
+            "original_currency": data.get("original_currency", row["original_currency"]),
+            "exchange_rate": data.get("exchange_rate", row["exchange_rate"]),
+            "original_amount_cents": data.get(
+                "original_amount_cents",
+                data.get("original_amount", row["original_amount_cents"])
+                if ("original_amount" in data or "original_amount_cents" in data)
+                else row["original_amount_cents"],
+            ),
         }
         merged.setdefault("expense_date", data.get("expense_date", row["expense_date"]))
         payload = parse_transaction_payload(merged, "expense_date")
-        splits = data.get("splits") or []
 
-        if splits and isinstance(splits, list):
+        # Only touch splits when the client actually sent them. Treating an
+        # absent key as `[]` used to delete every split on partial updates.
+        has_splits = "splits" in data
+        splits = data.get("splits") if has_splits else None
+
+        if has_splits:
+            if not isinstance(splits, list):
+                raise ValidationError("splits must be a list")
+
+        if has_splits and splits:
             split_total = 0
             for s in splits:
                 split_total += parse_amount_from_data(s, "amount")
@@ -3185,7 +3864,8 @@ def register_routes(app):
                 """
                 UPDATE expenses
                 SET title=?, category=?, amount_cents=?, expense_date=?, store=?,
-                    receipt_ref=?, notes=?, member=?, account_id=?, tags=?,
+                    receipt_ref=?, notes=?, member=?, member_id=?, account_id=?, tags=?,
+                    original_currency=?, exchange_rate=?, original_amount_cents=?,
                     updated_at=CURRENT_TIMESTAMP
                 WHERE id=?
                 """,
@@ -3198,27 +3878,35 @@ def register_routes(app):
                     str(merged.get("receipt_ref") or "").strip(),
                     payload["notes"],
                     payload["member"],
+                    payload["member_id"],
                     payload["account_id"],
                     payload["tags"],
+                    payload["original_currency"],
+                    payload["exchange_rate"],
+                    payload["original_amount_cents"],
                     eid,
                 ),
             )
 
             # Splits are only replaced when the client actually sent them;
             # a partial update leaves them untouched.
-            if isinstance(splits, list):
+            if has_splits:
                 conn.execute("DELETE FROM expense_splits WHERE expense_id=?", (eid,))
                 for s in splits:
+                    s_member, s_member_id = _resolve_split_member(
+                        s, payload["member"], payload["member_id"]
+                    )
                     conn.execute(
                         """
-                        INSERT INTO expense_splits (expense_id, category, amount_cents, member, notes)
-                        VALUES (?, ?, ?, ?, ?)
+                        INSERT INTO expense_splits (expense_id, category, amount_cents, member, member_id, notes)
+                        VALUES (?, ?, ?, ?, ?, ?)
                         """,
                         (
                             eid,
                             str(s.get("category") or payload["category"]).strip() or "Other",
                             parse_amount_from_data(s, "amount"),
-                            str(s.get("member") or payload["member"]).strip(),
+                            s_member,
+                            s_member_id,
                             str(s.get("notes") or "").strip(),
                         ),
                     )
@@ -3231,6 +3919,9 @@ def register_routes(app):
     @require_roles("Admin", "Editor")
     def expense_delete(eid):
         with get_db() as conn:
+            if not conn.execute("SELECT 1 FROM expenses WHERE id=?", (eid,)).fetchone():
+                return jsonify({"error": "Not found"}), 404
+
             conn.execute(
                 "UPDATE expenses SET is_deleted=1 WHERE id=?",
                 (eid,),
@@ -3352,7 +4043,7 @@ def register_routes(app):
         data = json_payload()
 
         with get_db() as conn:
-            income_id = insert_income(conn, data)
+            income_id = insert_income(conn, data, require_active_refs=True)
 
         audit("income_created", "income", income_id)
 
@@ -3404,16 +4095,35 @@ def register_routes(app):
             "amount": data.get("amount", cents_to_float(row["amount_cents"])),
             "category": data.get("category", row["category"]),
             "member": data.get("member", row["member"]),
+            "member_id": (
+                data["member_id"] if "member_id" in data
+                else (row["member_id"] if "member" not in data else None)
+            ),
             "notes": data.get("notes", row["notes"]),
             "source": data.get("source", row["source"]),
             "tags": data.get("tags", row["tags"]),
             "account_id": data.get("account_id", row["account_id"]),
+            "original_currency": data.get("original_currency", row["original_currency"]),
+            "exchange_rate": data.get("exchange_rate", row["exchange_rate"]),
+            "original_amount_cents": data.get(
+                "original_amount_cents",
+                data.get("original_amount", row["original_amount_cents"])
+                if ("original_amount" in data or "original_amount_cents" in data)
+                else row["original_amount_cents"],
+            ),
         }
         merged.setdefault("income_date", data.get("income_date", row["income_date"]))
         payload = parse_transaction_payload(merged, "income_date")
-        splits = data.get("splits") or []
 
-        if splits and isinstance(splits, list):
+        # Only touch splits when the client actually sent them.
+        has_splits = "splits" in data
+        splits = data.get("splits") if has_splits else None
+
+        if has_splits:
+            if not isinstance(splits, list):
+                raise ValidationError("splits must be a list")
+
+        if has_splits and splits:
             split_total = 0
             for s in splits:
                 split_total += parse_amount_from_data(s, "amount")
@@ -3425,7 +4135,8 @@ def register_routes(app):
                 """
                 UPDATE income
                 SET title=?, category=?, amount_cents=?, income_date=?, source=?,
-                    notes=?, member=?, account_id=?, tags=?,
+                    notes=?, member=?, member_id=?, account_id=?, tags=?,
+                    original_currency=?, exchange_rate=?, original_amount_cents=?,
                     updated_at=CURRENT_TIMESTAMP
                 WHERE id=?
                 """,
@@ -3437,27 +4148,35 @@ def register_routes(app):
                     str(merged.get("source") or "").strip(),
                     payload["notes"],
                     payload["member"],
+                    payload["member_id"],
                     payload["account_id"],
                     payload["tags"],
+                    payload["original_currency"],
+                    payload["exchange_rate"],
+                    payload["original_amount_cents"],
                     iid,
                 ),
             )
 
             # Splits are only replaced when the client actually sent them;
             # a partial update leaves them untouched.
-            if isinstance(splits, list):
+            if has_splits:
                 conn.execute("DELETE FROM income_splits WHERE income_id=?", (iid,))
                 for s in splits:
+                    s_member, s_member_id = _resolve_split_member(
+                        s, payload["member"], payload["member_id"]
+                    )
                     conn.execute(
                         """
-                        INSERT INTO income_splits (income_id, category, amount_cents, member, notes)
-                        VALUES (?, ?, ?, ?, ?)
+                        INSERT INTO income_splits (income_id, category, amount_cents, member, member_id, notes)
+                        VALUES (?, ?, ?, ?, ?, ?)
                         """,
                         (
                             iid,
                             str(s.get("category") or payload["category"]).strip() or "Other",
                             parse_amount_from_data(s, "amount"),
-                            str(s.get("member") or payload["member"]).strip(),
+                            s_member,
+                            s_member_id,
                             str(s.get("notes") or "").strip(),
                         ),
                     )
@@ -3470,6 +4189,9 @@ def register_routes(app):
     @require_roles("Admin", "Editor")
     def income_delete(iid):
         with get_db() as conn:
+            if not conn.execute("SELECT 1 FROM income WHERE id=?", (iid,)).fetchone():
+                return jsonify({"error": "Not found"}), 404
+
             conn.execute(
                 "UPDATE income SET is_deleted=1 WHERE id=?",
                 (iid,),
@@ -3574,23 +4296,48 @@ def register_routes(app):
             raise ValidationError("period must be monthly or yearly")
 
         amount_cents = parse_amount_from_data(data, "amount", allow_zero=False)
+        member = str(data.get("member") or "").strip()
 
-        with get_db() as conn:
-            conn.execute(
+        conn = get_db()
+
+        # Guard against two active budgets for the same (category, member,
+        # period). The IMMEDIATE transaction closes the check-then-insert
+        # race; a matching partial UNIQUE index backs this up at the DB level
+        # where the data allows.
+        if not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+
+        try:
+            exists = conn.execute(
+                "SELECT 1 FROM budgets WHERE category=? AND member=? AND period=? AND is_active=1",
+                (category, member, period),
+            ).fetchone()
+
+            if exists:
+                conn.rollback()
+                label = f"'{member}' for {category} ({period})" if member else f"{category} ({period})"
+                raise ValidationError(f"An active {period} budget already exists for {label}")
+
+            cur = conn.execute(
                 """
                 INSERT INTO budgets (category, member, period, amount_cents, notes)
                 VALUES (?, ?, ?, ?, ?)
                 """,
                 (
                     category,
-                    str(data.get("member") or "").strip(),
+                    member,
                     period,
                     amount_cents,
                     str(data.get("notes") or ""),
                 ),
             )
 
-        audit("budget_created", "budget", category)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+        audit("budget_created", "budget", cur.lastrowid, category)
 
         return jsonify({"success": True})
 
@@ -3609,10 +4356,27 @@ def register_routes(app):
             raise ValidationError("period must be monthly or yearly")
 
         amount_cents = parse_amount_from_data(data, "amount", allow_zero=False)
+        member = str(data.get("member") or "").strip()
+        is_active = 1 if data.get("is_active", True) else 0
 
         with get_db() as conn:
             if not conn.execute("SELECT 1 FROM budgets WHERE id=?", (bud_id,)).fetchone():
                 return jsonify({"error": "Not found"}), 404
+
+            if is_active:
+                clash = conn.execute(
+                    """
+                    SELECT 1 FROM budgets
+                    WHERE category=? AND member=? AND period=? AND is_active=1 AND id != ?
+                    """,
+                    (category, member, period, bud_id),
+                ).fetchone()
+
+                if clash:
+                    label = f"'{member}' for {category} ({period})" if member else f"{category} ({period})"
+                    raise ValidationError(
+                        f"An active {period} budget already exists for {label}"
+                    )
 
             conn.execute(
                 """
@@ -3622,11 +4386,11 @@ def register_routes(app):
                 """,
                 (
                     category,
-                    str(data.get("member") or "").strip(),
+                    member,
                     period,
                     amount_cents,
                     str(data.get("notes") or ""),
-                    1 if data.get("is_active", True) else 0,
+                    is_active,
                     bud_id,
                 ),
             )
@@ -3690,25 +4454,27 @@ def register_routes(app):
         )
 
         target_date = parse_iso_date(data.get("target_date"), "target_date", allow_none=True)
+        allocation_pct = parse_percent(data.get("allocation_pct", 0), "allocation_pct")
 
         with get_db() as conn:
-            conn.execute(
+            cur = conn.execute(
                 """
-                INSERT INTO goals (name, target_cents, current_cents, target_date, notes)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO goals (name, target_cents, current_cents, target_date, allocation_pct, notes)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     name,
                     target_cents,
                     current_cents,
                     target_date,
+                    allocation_pct,
                     str(data.get("notes") or ""),
                 ),
             )
 
         audit("goal_created", "goal", name)
 
-        return jsonify({"success": True})
+        return jsonify({"success": True, "id": cur.lastrowid})
 
     @app.put("/api/goals/<int:gid>")
     @require_roles("Admin", "Editor")
@@ -3730,6 +4496,7 @@ def register_routes(app):
         )
 
         target_date = parse_iso_date(data.get("target_date"), "target_date", allow_none=True)
+        allocation_pct = parse_percent(data.get("allocation_pct", 0), "allocation_pct")
 
         with get_db() as conn:
             if not conn.execute("SELECT 1 FROM goals WHERE id=?", (gid,)).fetchone():
@@ -3738,7 +4505,7 @@ def register_routes(app):
             conn.execute(
                 """
                 UPDATE goals
-                SET name=?, target_cents=?, current_cents=?, target_date=?, notes=?, is_active=?
+                SET name=?, target_cents=?, current_cents=?, target_date=?, allocation_pct=?, notes=?, is_active=?
                 WHERE id=?
                 """,
                 (
@@ -3746,6 +4513,7 @@ def register_routes(app):
                     target_cents,
                     current_cents,
                     target_date,
+                    allocation_pct,
                     str(data.get("notes") or ""),
                     1 if data.get("is_active", True) else 0,
                     gid,
@@ -3991,19 +4759,21 @@ def register_routes(app):
 
                         if rule["entity_type"] == "expense":
                             payload["expense_date"] = rule["next_run_date"]
-                            entity_id = insert_expense(conn, payload)
+                            entity_id = insert_expense(conn, payload, require_active_refs=True)
                             created.append({"rule": rule["name"], "entity_type": "expense", "id": entity_id})
 
                         elif rule["entity_type"] == "income":
                             payload["income_date"] = rule["next_run_date"]
-                            entity_id = insert_income(conn, payload)
+                            entity_id = insert_income(conn, payload, require_active_refs=True)
                             created.append({"rule": rule["name"], "entity_type": "income", "id": entity_id})
 
                         elif rule["entity_type"] == "bill":
                             payload["bill_date"] = rule["next_run_date"]
                             payload["due_date"] = rule["next_run_date"]
 
-                            parsed_bill = parse_bill_payload(payload)
+                            # parse_bill_payload resolves payee_name from
+                            # payee_id, matching manual bill creation.
+                            parsed_bill = parse_bill_payload(payload, require_active_refs=True)
                             settings = load_settings()
                             bill_number = next_bill_number(conn, settings.get("bill_prefix", "BILL"))
 
@@ -4319,16 +5089,40 @@ def register_routes(app):
                 "savings": cents_to_float(savings),
             })
 
+        # Top categories include split allocations (an expense with splits
+        # counts each split's category instead of its own — no double
+        # counting) and bill payments, so recurring rent/utilities actually
+        # show up in the breakdown.
         top_cats = rows_to_list(conn.execute(
-            """
-            SELECT category, SUM(amount_cents) AS total_cents
-            FROM expenses
-            WHERE is_deleted=0 AND strftime('%Y-%m', expense_date)=?
+            f"""
+            SELECT category, SUM(cents) AS total_cents
+            FROM (
+                SELECT e.category AS category, SUM(e.amount_cents) AS cents
+                FROM expenses e
+                WHERE e.is_deleted=0 AND strftime('%Y-%m', e.expense_date)=?
+                  AND NOT EXISTS (SELECT 1 FROM expense_splits es WHERE es.expense_id=e.id)
+                GROUP BY e.category
+
+                UNION ALL
+
+                SELECT es.category AS category, SUM(es.amount_cents) AS cents
+                FROM expense_splits es
+                JOIN expenses e ON e.id = es.expense_id
+                WHERE e.is_deleted=0 AND strftime('%Y-%m', e.expense_date)=?
+                GROUP BY es.category
+
+                UNION ALL
+
+                SELECT b.bill_category AS category, SUM(bp.amount_cents) AS cents
+                {VALID_BILL_PAYMENT_FROM}
+                WHERE strftime('%Y-%m', bp.payment_date)=?
+                GROUP BY b.bill_category
+            )
             GROUP BY category
             ORDER BY total_cents DESC
             LIMIT 6
             """,
-            (this_month,),
+            (this_month, this_month, this_month),
         ).fetchall())
 
         for row in top_cats:
@@ -4724,37 +5518,14 @@ def register_routes(app):
                 "SELECT * FROM budgets WHERE is_active=1 AND period='monthly'",
             ).fetchall())
 
-            actual_rows = conn.execute(
-                f"""
-                SELECT category, SUM(cents) AS actual_cents
-                FROM (
-                    SELECT category, SUM(amount_cents) AS cents
-                    FROM expenses
-                    WHERE is_deleted=0 AND strftime('%Y-%m', expense_date)=?
-                    GROUP BY category
-
-                    UNION ALL
-
-                    SELECT b.bill_category AS category, SUM(bp.amount_cents) AS cents
-                    {VALID_BILL_PAYMENT_FROM}
-                    WHERE strftime('%Y-%m', bp.payment_date)=?
-                    GROUP BY b.bill_category
-                )
-                GROUP BY category
-                """,
-                (month, month),
-            ).fetchall()
-
-            # Member-attributed expense actuals, used for member-specific budgets.
-            member_expense_rows = conn.execute(
-                """
-                SELECT member, category, SUM(amount_cents) AS cents
-                FROM expenses
-                WHERE is_deleted=0 AND strftime('%Y-%m', expense_date)=? AND member != ''
-                GROUP BY member, category
-                """,
-                (month,),
-            ).fetchall()
+            # Actuals respect expense_splits: an expense without splits counts
+            # toward its own category, an expense WITH splits counts each
+            # split's category instead (same no-double-count pattern the
+            # allowance tracker uses). Bill payments count too.
+            date_filter = "strftime('%Y-%m', %s)=?"
+            expense_date_col = "e.expense_date"
+            payment_date_col = "bp.payment_date"
+            range_param = month
 
         else:
             year = request.args.get("year", str(date.today().year))
@@ -4766,36 +5537,65 @@ def register_routes(app):
                 "SELECT * FROM budgets WHERE is_active=1 AND period='yearly'",
             ).fetchall())
 
-            actual_rows = conn.execute(
-                f"""
-                SELECT category, SUM(cents) AS actual_cents
-                FROM (
-                    SELECT category, SUM(amount_cents) AS cents
-                    FROM expenses
-                    WHERE is_deleted=0 AND strftime('%Y', expense_date)=?
-                    GROUP BY category
+            date_filter = "strftime('%Y', %s)=?"
+            expense_date_col = "e.expense_date"
+            payment_date_col = "bp.payment_date"
+            range_param = year
 
-                    UNION ALL
+        actual_rows = conn.execute(
+            f"""
+            SELECT category, SUM(cents) AS actual_cents
+            FROM (
+                SELECT e.category AS category, SUM(e.amount_cents) AS cents
+                FROM expenses e
+                WHERE e.is_deleted=0 AND {date_filter.replace("%s", expense_date_col)}
+                  AND NOT EXISTS (SELECT 1 FROM expense_splits es WHERE es.expense_id=e.id)
+                GROUP BY e.category
 
-                    SELECT b.bill_category AS category, SUM(bp.amount_cents) AS cents
-                    {VALID_BILL_PAYMENT_FROM}
-                    WHERE strftime('%Y', bp.payment_date)=?
-                    GROUP BY b.bill_category
-                )
-                GROUP BY category
-                """,
-                (year, year),
-            ).fetchall()
+                UNION ALL
 
-            member_expense_rows = conn.execute(
-                """
-                SELECT member, category, SUM(amount_cents) AS cents
-                FROM expenses
-                WHERE is_deleted=0 AND strftime('%Y', expense_date)=? AND member != ''
-                GROUP BY member, category
-                """,
-                (year,),
-            ).fetchall()
+                SELECT es.category AS category, SUM(es.amount_cents) AS cents
+                FROM expense_splits es
+                JOIN expenses e ON e.id = es.expense_id
+                WHERE e.is_deleted=0 AND {date_filter.replace("%s", expense_date_col)}
+                GROUP BY es.category
+
+                UNION ALL
+
+                SELECT b.bill_category AS category, SUM(bp.amount_cents) AS cents
+                {VALID_BILL_PAYMENT_FROM}
+                WHERE {date_filter.replace("%s", payment_date_col)}
+                GROUP BY b.bill_category
+            )
+            GROUP BY category
+            """,
+            (range_param, range_param, range_param),
+        ).fetchall()
+
+        # Member-attributed actuals for member-specific budgets use the same
+        # split-aware pattern.
+        member_expense_rows = conn.execute(
+            f"""
+            SELECT member, category, SUM(cents) AS cents
+            FROM (
+                SELECT e.member AS member, e.category AS category, SUM(e.amount_cents) AS cents
+                FROM expenses e
+                WHERE e.is_deleted=0 AND {date_filter.replace("%s", expense_date_col)} AND e.member != ''
+                  AND NOT EXISTS (SELECT 1 FROM expense_splits es WHERE es.expense_id=e.id)
+                GROUP BY e.member, e.category
+
+                UNION ALL
+
+                SELECT es.member AS member, es.category AS category, SUM(es.amount_cents) AS cents
+                FROM expense_splits es
+                JOIN expenses e ON e.id = es.expense_id
+                WHERE e.is_deleted=0 AND {date_filter.replace("%s", expense_date_col)} AND es.member != ''
+                GROUP BY es.member, es.category
+            )
+            GROUP BY member, category
+            """,
+            (range_param, range_param),
+        ).fetchall()
 
         actual_by_category = {
             row["category"]: int(row["actual_cents"]) for row in actual_rows
@@ -5041,38 +5841,64 @@ def register_routes(app):
 
             months = 0
             total_interest_cents = 0
-            schedule = []
+
+            # Total monthly payoff fuel stays fixed for the whole plan: the
+            # configured extra plus every starting minimum. When a debt dies,
+            # its freed-up minimum therefore keeps flowing to the remaining
+            # debts (the snowball/avalanche rollover) instead of vanishing.
+            monthly_budget = int(extra_cents) + sum(
+                max(0, int(d["minimum_payment_cents"] or 0)) for d in debts_copy
+            )
 
             while debts_copy and months < 360:
                 months += 1
-                month_interest = 0
-                extra_available = extra_cents
 
+                # Interest accrues on every surviving debt first.
+                month_interest = 0
                 for d in debts_copy:
                     m_interest = int(round(d["balance_cents"] * (d["interest_rate"] / 100.0 / 12.0)))
                     month_interest += m_interest
                     d["balance_cents"] += m_interest
 
-                    min_pay = min(d["minimum_payment_cents"], d["balance_cents"]) if d["minimum_payment_cents"] > 0 else min(d["balance_cents"], 5000)
-                    min_pay = max(min_pay, min(d["balance_cents"], 1000))
+                total_interest_cents += month_interest
+
+                budget = monthly_budget
+
+                # Each debt pays its user-configured minimum — which may
+                # legitimately be $0 (e.g. an interest-free family loan).
+                # The old hardcoded $10/month floor is gone.
+                for d in debts_copy:
+                    min_pay = max(0, int(d["minimum_payment_cents"] or 0))
                     pay = min(d["balance_cents"], min_pay)
                     d["balance_cents"] -= pay
+                    budget -= pay
 
-                if extra_available > 0 and debts_copy:
-                    target = next((d for d in debts_copy if d["balance_cents"] > 0), None)
-                    if target:
-                        extra_pay = min(target["balance_cents"], extra_available)
-                        target["balance_cents"] -= extra_pay
+                # Leftover budget cascades down the strategy order until the
+                # money runs out, instead of being dropped after one debt.
+                for d in debts_copy:
+                    if budget <= 0:
+                        break
+                    pay = min(d["balance_cents"], budget)
+                    d["balance_cents"] -= pay
+                    budget -= pay
 
-                total_interest_cents += month_interest
                 debts_copy = [d for d in debts_copy if d["balance_cents"] > 0]
 
-            return {
+            result = {
                 "months": months,
                 "years": round(months / 12.0, 1),
                 "total_interest": cents_to_float(total_interest_cents),
                 "total_interest_cents": total_interest_cents,
+                "will_never_be_paid_off": bool(debts_copy),
             }
+
+            if debts_copy:
+                result["warning"] = (
+                    "These debts are not paid off within 360 months at these "
+                    "payment levels — monthly interest outpaces the payments."
+                )
+
+            return result
 
         return jsonify({
             "debts": debts,
@@ -5114,18 +5940,98 @@ def register_routes(app):
 
         monthly_net_cents = avg_income_cents - (avg_expense_cents + avg_bill_cents)
 
+        # --- Forward-looking components -------------------------------------
+        # Active recurring rules, normalized to a per-month impact, so the
+        # projection reflects known schedules rather than only the noisy
+        # backward-looking average.
+        PERIOD_DAYS = {"daily": 1.0, "weekly": 7.0, "monthly": 30.4375, "yearly": 365.25}
+        recurring_income_cents = 0.0
+        recurring_outflow_cents = 0.0
+        rule_count = 0
+
+        for rule in conn.execute(
+            "SELECT entity_type, payload, frequency, interval_value FROM recurring_rules WHERE is_active=1"
+        ).fetchall():
+            try:
+                payload = json.loads(rule["payload"])
+            except Exception:
+                continue
+
+            if not isinstance(payload, dict):
+                continue
+
+            try:
+                amount_cents = parse_amount_from_data(
+                    payload, "amount", default_cents=0, allow_zero=True
+                )
+            except ValidationError:
+                continue
+
+            interval = max(int(rule["interval_value"] or 1), 1)
+            days_per_period = PERIOD_DAYS.get(rule["frequency"], 30.4375) * interval
+            per_month_cents = amount_cents * (30.4375 / days_per_period)
+
+            if rule["entity_type"] == "income":
+                recurring_income_cents += per_month_cents
+            else:
+                recurring_outflow_cents += per_month_cents
+                # Bills and expenses both land on the outflow side.
+            rule_count += 1
+
+        # Already-issued, not-yet-paid bills become scheduled outflows in
+        # their due month (they are absent from historical payment averages).
+        horizon_end_iso = add_months(today.replace(day=1), months + 1).isoformat()
+        scheduled_by_month = {}
+        scheduled_count = 0
+
+        for row in conn.execute(
+            f"""
+            SELECT bp.due_date_key AS due_date_key, SUM(bp.due_cents) AS due_cents
+            FROM (
+                SELECT b.due_date AS due_date_key, (b.total_cents - b.paid_cents) AS due_cents
+                FROM bills b
+                WHERE b.is_deleted=0 AND b.status IN ('Pending', 'Partially Paid')
+                  AND b.due_date >= ? AND b.due_date < ?
+            ) bp
+            GROUP BY bp.due_date_key
+            """,
+            (today.isoformat(), horizon_end_iso),
+        ).fetchall():
+            ym = str(row["due_date_key"])[:7]
+            scheduled_by_month[ym] = scheduled_by_month.get(ym, 0) + row["due_cents"]
+            scheduled_count += 1
+
+        # Blend: with active rules, trust the schedules half as much as the
+        # recent history; otherwise fall back to pure history.
+        weight_history = 0.5 if rule_count else 1.0
+
         projection = []
         sim_nw_cents = current_net_worth_cents
         cur_date = today.replace(day=1)
 
         for i in range(1, months + 1):
             cur_date = add_months(cur_date, 1)
-            sim_nw_cents += monthly_net_cents
+            month_key = cur_date.strftime("%Y-%m")
+
+            est_income = (
+                weight_history * avg_income_cents
+                + (1 - weight_history) * recurring_income_cents
+            )
+            est_outflow = (
+                weight_history * (avg_expense_cents + avg_bill_cents)
+                + (1 - weight_history) * recurring_outflow_cents
+                + scheduled_by_month.get(month_key, 0)
+            )
+
+            net_change = est_income - est_outflow
+            sim_nw_cents += net_change
+
             projection.append({
                 "month": cur_date.strftime("%Y-%m"),
-                "estimated_income": cents_to_float(avg_income_cents),
-                "estimated_expense": cents_to_float(avg_expense_cents + avg_bill_cents),
-                "estimated_net_change": cents_to_float(monthly_net_cents),
+                "estimated_income": cents_to_float(est_income),
+                "estimated_expense": cents_to_float(est_outflow),
+                "scheduled_bills": cents_to_float(scheduled_by_month.get(month_key, 0)),
+                "estimated_net_change": cents_to_float(net_change),
                 "projected_net_worth": cents_to_float(sim_nw_cents),
             })
 
@@ -5134,6 +6040,11 @@ def register_routes(app):
             "historical_monthly_income": cents_to_float(avg_income_cents),
             "historical_monthly_expense": cents_to_float(avg_expense_cents + avg_bill_cents),
             "monthly_net_change": cents_to_float(monthly_net_cents),
+            "recurring_monthly_income": cents_to_float(recurring_income_cents),
+            "recurring_monthly_outflow": cents_to_float(recurring_outflow_cents),
+            "recurring_rule_count": rule_count,
+            "scheduled_bills_total": cents_to_float(sum(scheduled_by_month.values())),
+            "scheduled_bills_count": scheduled_count,
             "projection": projection,
         })
 
@@ -5146,14 +6057,18 @@ def register_routes(app):
     def reminders():
         conn = get_db()
 
-        today_str = date.today().isoformat()
-        in_14_days = (date.today() + timedelta(days=14)).isoformat()
+        # One authoritative "today" computed in Python and passed into SQL as
+        # a bound parameter — mixing Python's local date with SQLite's
+        # date('now') (UTC) made the filter and the displayed day-counts
+        # disagree by a day near midnight on non-UTC servers.
+        today = date.today()
+        today_str = today.isoformat()
+        in_14_days = (today + timedelta(days=14)).isoformat()
 
         overdue = rows_to_list(conn.execute(
             """
             SELECT id, bill_number, payee_name, due_date, total_cents, paid_cents,
-                   status, bill_category,
-                   CAST(julianday(date('now')) - julianday(due_date) AS INTEGER) AS days_overdue
+                   status, bill_category
             FROM bills
             WHERE is_deleted=0
               AND status IN ('Pending', 'Partially Paid')
@@ -5166,8 +6081,7 @@ def register_routes(app):
         upcoming = rows_to_list(conn.execute(
             """
             SELECT id, bill_number, payee_name, due_date, total_cents, paid_cents,
-                   status, bill_category,
-                   CAST(julianday(due_date) - julianday(date('now')) AS INTEGER) AS days_left
+                   status, bill_category
             FROM bills
             WHERE is_deleted=0
               AND status IN ('Pending', 'Partially Paid')
@@ -5176,6 +6090,12 @@ def register_routes(app):
             """,
             (today_str, in_14_days),
         ).fetchall())
+
+        for row in overdue:
+            row["days_overdue"] = max(0, (today - date.fromisoformat(row["due_date"])).days)
+
+        for row in upcoming:
+            row["days_left"] = max(0, (date.fromisoformat(row["due_date"]) - today).days)
 
         for row in overdue + upcoming:
             total_cents = row.pop("total_cents", 0)
@@ -5248,7 +6168,20 @@ def register_routes(app):
             spent_cents = spent_by_member.get(item["member_name"], 0)
             item["spent_this_month"] = cents_to_float(spent_cents)
             item["spent_this_month_cents"] = spent_cents
-            item["remaining_this_month"] = cents_to_float(item["amount_cents"] - spent_cents)
+
+            # A weekly rule's amount covers one week, but spending is being
+            # compared against a whole month. Scale the weekly amount by the
+            # average number of weeks per month (52/12 ≈ 4.333) so
+            # "remaining" reflects the true monthly allowance instead of
+            # going negative after the first $20 of monthly spend.
+            if item["frequency"] == "weekly":
+                period_budget_cents = int(round(item["amount_cents"] * 52 / 12))
+            else:
+                period_budget_cents = int(item["amount_cents"])
+
+            item["monthly_equivalent_cents"] = period_budget_cents
+            item["monthly_equivalent"] = cents_to_float(period_budget_cents)
+            item["remaining_this_month"] = cents_to_float(period_budget_cents - spent_cents)
 
         return jsonify(items)
 
@@ -5256,7 +6189,9 @@ def register_routes(app):
     @require_roles("Admin", "Editor")
     def allowance_create():
         data = json_payload()
-        member_id = ensure_reference_exists(get_db(), "members", data.get("member_id"), "member_id")
+        member_id = ensure_reference_exists(
+            get_db(), "members", data.get("member_id"), "member_id", require_active=True
+        )
         if not member_id:
             raise ValidationError("member_id is required")
 
@@ -5266,14 +6201,36 @@ def register_routes(app):
 
         amount_cents = parse_amount_from_data(data, "amount", allow_zero=False)
 
-        with get_db() as conn:
-            conn.execute(
+        conn = get_db()
+
+        # One active rule per member per frequency; the IMMEDIATE transaction
+        # closes the check-then-insert race and a UNIQUE index backs this up.
+        if not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+
+        try:
+            exists = conn.execute(
+                "SELECT 1 FROM allowances WHERE member_id=? AND frequency=?",
+                (member_id, frequency),
+            ).fetchone()
+
+            if exists:
+                conn.rollback()
+                raise ValidationError(
+                    f"An active {frequency} allowance already exists for this member"
+                )
+
+            cur = conn.execute(
                 """
                 INSERT INTO allowances (member_id, amount_cents, frequency, notes)
                 VALUES (?, ?, ?, ?)
                 """,
                 (member_id, amount_cents, frequency, str(data.get("notes") or "")),
             )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
         audit("allowance_created", "allowance", member_id)
         return jsonify({"success": True})
@@ -5282,7 +6239,9 @@ def register_routes(app):
     @require_roles("Admin", "Editor")
     def allowance_update(alid):
         data = json_payload()
-        member_id = ensure_reference_exists(get_db(), "members", data.get("member_id"), "member_id")
+        member_id = ensure_reference_exists(
+            get_db(), "members", data.get("member_id"), "member_id", require_active=True
+        )
         if not member_id:
             raise ValidationError("member_id is required")
 
@@ -5295,6 +6254,16 @@ def register_routes(app):
         with get_db() as conn:
             if not conn.execute("SELECT 1 FROM allowances WHERE id=?", (alid,)).fetchone():
                 return jsonify({"error": "Not found"}), 404
+
+            clash = conn.execute(
+                "SELECT 1 FROM allowances WHERE member_id=? AND frequency=? AND id != ?",
+                (member_id, frequency, alid),
+            ).fetchone()
+
+            if clash:
+                raise ValidationError(
+                    f"An active {frequency} allowance already exists for this member"
+                )
 
             conn.execute(
                 """
@@ -5358,39 +6327,63 @@ def register_routes(app):
             raise ValidationError("items list is required")
 
         imported_count = 0
+        failed = []
         conn = get_db()
 
-        with conn:
-            for item in items:
+        for row_index, item in enumerate(items):
+            # Row-isolated SAVEPOINT (same hardening recurring_run uses): one
+            # bad row rolls back only itself and is reported, instead of
+            # aborting and rolling back the whole file.
+            conn.execute("SAVEPOINT csv_row")
+
+            try:
                 title = str(item.get("title") or item.get("description") or "Imported Item").strip()
                 cat = str(item.get("category") or "Other").strip()
                 amt_cents = parse_amount_from_data(item, "amount")
-                tx_date = parse_iso_date(item.get("date"), "date")
+                tx_date = parse_flexible_date(item.get("date"), "date")
                 account_id = item.get("account_id") or None
                 notes = str(item.get("notes") or "").strip()
 
-                if target_type == "expense":
-                    insert_expense(conn, {
-                        "title": title,
-                        "category": cat,
-                        "amount_cents": amt_cents,
-                        "expense_date": tx_date,
-                        "notes": notes,
-                        "account_id": account_id,
-                    })
-                else:
-                    insert_income(conn, {
-                        "title": title,
-                        "category": cat,
-                        "amount_cents": amt_cents,
-                        "income_date": tx_date,
-                        "notes": notes,
-                        "account_id": account_id,
-                    })
-                imported_count += 1
+                record = {
+                    "title": title,
+                    "category": cat,
+                    "amount_cents": amt_cents,
+                    "notes": notes,
+                    "account_id": account_id,
+                    "expense_date" if target_type == "expense" else "income_date": tx_date,
+                }
 
-        audit("csv_imported", target_type, "", f"Imported {imported_count} records")
-        return jsonify({"success": True, "imported_count": imported_count})
+                if target_type == "expense":
+                    insert_expense(conn, record, require_active_refs=True)
+                else:
+                    insert_income(conn, record, require_active_refs=True)
+
+                imported_count += 1
+                conn.execute("RELEASE SAVEPOINT csv_row")
+            except ValidationError as exc:
+                conn.execute("ROLLBACK TO SAVEPOINT csv_row")
+                conn.execute("RELEASE SAVEPOINT csv_row")
+                failed.append({"row": row_index, "error": exc.message})
+            except Exception as exc:
+                conn.execute("ROLLBACK TO SAVEPOINT csv_row")
+                conn.execute("RELEASE SAVEPOINT csv_row")
+                current_app.logger.exception("CSV import row %s failed", row_index)
+                failed.append({"row": row_index, "error": str(exc)})
+
+        audit(
+            "csv_imported",
+            target_type,
+            "",
+            f"Imported {imported_count} record(s), {len(failed)} failed",
+        )
+
+        return jsonify({
+            "success": True,
+            "imported_count": imported_count,
+            "failed_rows": len(failed),
+            "failed": failed,
+            "total_rows": len(items),
+        })
 
     @app.post("/api/admin/restore")
     @require_roles("Admin")
@@ -5443,7 +6436,16 @@ def register_routes(app):
             src.close()
 
             audit("database_restored", "database", "", file.filename)
-            return jsonify({"success": True})
+
+            # Other threads/workers may still hold connections with cached
+            # WAL state pointed at pre-restore data. The endpoint closes this
+            # request's connection only — restarting the process is the
+            # reliable way to drop every stale handle.
+            return jsonify({
+                "success": True,
+                "restart_recommended": True,
+                "message": "Database restored. Restart the FamilyFinance process to guarantee all workers pick up the restored data.",
+            })
         finally:
             try:
                 os.unlink(tmp_path)
@@ -5634,10 +6636,10 @@ def generate_print_bill(b, items, s):
   <table style="width:100%;border-collapse:collapse;margin-bottom:24px;">
     <thead>
       <tr style="background:#1e1b4b;color:#fff;">
-        <th style="padding:12px 16px;text-align:left;">Description</th>
-        <th style="padding:12px 16px;text-align:center;">Qty</th>
-        <th style="padding:12px 16px;text-align:right;">Unit Price</th>
-        <th style="padding:12px 16px;text-align:right;">Amount</th>
+        <th scope="col" style="padding:12px 16px;text-align:left;">Description</th>
+        <th scope="col" style="padding:12px 16px;text-align:center;">Qty</th>
+        <th scope="col" style="padding:12px 16px;text-align:right;">Unit Price</th>
+        <th scope="col" style="padding:12px 16px;text-align:right;">Amount</th>
       </tr>
     </thead>
     <tbody>

@@ -2,6 +2,7 @@ import io
 import os
 import sqlite3
 import tempfile
+import threading
 from datetime import date
 from pathlib import Path
 
@@ -1069,3 +1070,859 @@ def test_cash_flow_report_shape(client):
     assert current["savings_rate"] == 100.0
     for key in ("month", "income", "expenses", "bill_payments", "outflow", "savings", "savings_rate"):
         assert key in current
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for review pass 2 (bugs 1.1-1.9, 2.x-4.x, features)
+# ---------------------------------------------------------------------------
+
+
+def test_delete_endpoints_return_404_for_missing_ids(client):
+    """Bug 1.1: category/payee/bill/expense/income deletes used to report
+    success even for nonexistent ids."""
+    token = login(client)
+    headers = auth_headers(token)
+
+    for path in (
+        "/api/categories/9999",
+        "/api/payees/9999",
+        "/api/bills/9999",
+        "/api/expenses/9999",
+        "/api/income/9999",
+    ):
+        resp = client.delete(path, headers=headers)
+        assert resp.status_code == 404, f"{path} returned {resp.status_code}"
+        assert resp.get_json()["error"] == "Not found"
+
+
+def test_partial_update_preserves_splits(client):
+    """Bug 1.2: a PUT that omits "splits" must not delete existing splits."""
+    token = login(client)
+    headers = auth_headers(token)
+
+    resp = client.post(
+        "/api/expenses",
+        headers=headers,
+        json={
+            "title": "Split expense",
+            "category": "Other",
+            "amount": "100.00",
+            "expense_date": "2026-06-25",
+            "splits": [
+                {"category": "Groceries & Food", "amount": "60.00"},
+                {"category": "Healthcare & Medical", "amount": "40.00"},
+            ],
+        },
+    )
+    assert resp.status_code == 200
+    eid = resp.get_json()["id"]
+
+    # Partial update touching ONLY notes.
+    resp = client.put(f"/api/expenses/{eid}", headers=headers, json={"notes": "updated"})
+    assert resp.status_code == 200
+
+    data = client.get(f"/api/expenses/{eid}").get_json()
+    assert data["notes"] == "updated"
+    assert len(data["splits"]) == 2
+    assert {s["category"] for s in data["splits"]} == {
+        "Groceries & Food",
+        "Healthcare & Medical",
+    }
+
+    # An explicit empty list still means "clear the splits".
+    resp = client.put(f"/api/expenses/{eid}", headers=headers, json={"splits": []})
+    assert resp.status_code == 200
+    data = client.get(f"/api/expenses/{eid}").get_json()
+    assert data["splits"] == []
+
+    # Same guarantee for income.
+    resp = client.post(
+        "/api/income",
+        headers=headers,
+        json={
+            "title": "Split income",
+            "category": "Other",
+            "amount": "90.00",
+            "income_date": "2026-06-26",
+            "splits": [
+                {"category": "Salary / Wages", "amount": "50.00"},
+                {"category": "Other", "amount": "40.00"},
+            ],
+        },
+    )
+    iid = resp.get_json()["id"]
+    resp = client.put(f"/api/income/{iid}", headers=headers, json={"notes": "kept"})
+    assert resp.status_code == 200
+    data = client.get(f"/api/income/{iid}").get_json()
+    assert data["notes"] == "kept"
+    assert len(data["splits"]) == 2
+
+
+def test_invalid_payee_id_with_payee_name_returns_400(client):
+    """Bug 1.3: an invalid payee_id plus a free-text payee_name used to skip
+    validation entirely and hit a raw foreign-key 500."""
+    token = login(client)
+    headers = auth_headers(token)
+
+    resp = client.post(
+        "/api/bills",
+        headers=headers,
+        json={
+            "payee_id": 9999,
+            "payee_name": "Fallback Name",
+            "bill_category": "Other",
+            "bill_date": "2026-06-01",
+            "due_date": "2026-06-15",
+            "items": [{"item_name": "x", "quantity": 1, "unit_price": "10.00"}],
+        },
+    )
+    assert resp.status_code == 400
+    assert "payee_id does not exist" in resp.get_json()["error"]
+
+    # Same protection on update.
+    create_resp = client.post(
+        "/api/bills",
+        headers=headers,
+        json={
+            "payee_name": "Real Bill",
+            "bill_category": "Other",
+            "bill_date": "2026-06-01",
+            "due_date": "2026-06-15",
+            "items": [{"item_name": "x", "quantity": 1, "unit_price": "10.00"}],
+        },
+    )
+    bid = create_resp.get_json()["id"]
+
+    resp = client.put(
+        f"/api/bills/{bid}",
+        headers=headers,
+        json={
+            "payee_id": 9999,
+            "payee_name": "Fallback Name",
+            "bill_category": "Other",
+            "bill_date": "2026-06-01",
+            "due_date": "2026-06-15",
+            "items": [{"item_name": "x", "quantity": 1, "unit_price": "10.00"}],
+        },
+    )
+    assert resp.status_code == 400
+
+
+def test_recurring_bill_rule_resolves_payee_name_from_id(client):
+    """Bug 1.4: recurring bill rules with only payee_id produced bills with a
+    blank payee_name; they now resolve it like manual creation."""
+    token = login(client)
+    headers = auth_headers(token)
+
+    resp = client.post("/api/payees", headers=headers, json={"name": "City Power"})
+    assert resp.status_code == 200
+
+    payees = client.get("/api/payees?limit=10", headers=headers).get_json()
+    payee_id = next(p["id"] for p in payees["items"] if p["name"] == "City Power")
+
+    resp = client.post(
+        "/api/recurring",
+        headers=headers,
+        json={
+            "name": "Power rule",
+            "entity_type": "bill",
+            "frequency": "monthly",
+            "interval_value": 1,
+            "next_run_date": "2026-08-01",
+            "payload": {
+                "payee_id": payee_id,
+                "bill_category": "Electricity",
+                "items": [{"item_name": "Usage", "quantity": 1, "unit_price": "75.00"}],
+            },
+        },
+    )
+    assert resp.status_code == 200
+
+    resp = client.post("/api/recurring/run", headers=headers, json={})
+    assert resp.status_code == 200
+    assert not resp.get_json()["failed"], resp.get_json()["failed"]
+    created_bills = [c for c in resp.get_json()["created"] if c["entity_type"] == "bill"]
+    assert created_bills
+
+    bills = client.get("/api/bills", headers=headers).get_json()
+    generated = next(b for b in bills["items"] if b["payee_id"] == payee_id)
+    assert generated["payee_name"] == "City Power"
+
+
+def test_csv_import_row_isolation(client):
+    """Bug 1.5: one bad row must not abort or roll back the whole import."""
+    token = login(client)
+    headers = auth_headers(token)
+
+    items = [
+        {"title": "Good One", "category": "Other", "amount": "10.00", "date": "2026-06-01"},
+        {"title": "Bad Date", "category": "Other", "amount": "20.00", "date": "not-a-date"},
+        {"title": "Bad Amount", "category": "Other", "amount": "-5.00", "date": "2026-06-03"},
+        {"title": "Good Two", "category": "Other", "amount": "30.00", "date": "2026-06-04"},
+    ]
+
+    resp = client.post(
+        "/api/import/csv/commit",
+        headers=headers,
+        json={"target_type": "expense", "items": items},
+    )
+    assert resp.status_code == 200
+
+    data = resp.get_json()
+    assert data["imported_count"] == 2
+    assert len(data["failed"]) == 2
+    assert [f["row"] for f in data["failed"]] == [1, 2]
+    assert "date" in data["failed"][0]["error"]
+
+    titles = [i["title"] for i in client.get("/api/expenses", headers=headers).get_json()["items"]]
+    assert {"Good One", "Good Two"} <= set(titles)
+    assert "Bad Date" not in titles
+
+
+def test_csv_import_accepts_common_bank_date_formats(client):
+    """Bug 1.6: MM/DD/YYYY (and other common formats) must import cleanly."""
+    token = login(client)
+    headers = auth_headers(token)
+
+    items = [
+        {"title": "US format", "amount": "12.00", "date": "06/22/2026"},
+        {"title": "Slash ISO", "amount": "13.00", "date": "2026/06/23"},
+        {"title": "Dotted", "amount": "14.00", "date": "24.06.2026"},
+    ]
+
+    resp = client.post(
+        "/api/import/csv/commit",
+        headers=headers,
+        json={"target_type": "expense", "items": items},
+    )
+    assert resp.status_code == 200
+    assert resp.get_json()["imported_count"] == 3, resp.get_json()
+
+    expenses = client.get(
+        "/api/expenses?from=2026-06-01&to=2026-06-30", headers=headers
+    ).get_json()
+    dates = {i["title"]: i["expense_date"] for i in expenses["items"]}
+    assert dates["US format"] == "2026-06-22"
+    assert dates["Slash ISO"] == "2026-06-23"
+    assert dates["Dotted"] == "2026-06-24"
+
+
+def test_budget_report_counts_split_categories(client):
+    """Bug 1.7: split allocations drive category actuals instead of the
+    parent expense's own category."""
+    token = login(client)
+    headers = auth_headers(token)
+
+    client.post(
+        "/api/expenses",
+        headers=headers,
+        json={
+            "title": "Mall trip",
+            "category": "Other",
+            "amount": "100.00",
+            "expense_date": "2026-06-10",
+            "splits": [
+                {"category": "Groceries & Food", "amount": "60.00"},
+                {"category": "Healthcare & Medical", "amount": "40.00"},
+            ],
+        },
+    )
+
+    client.post(
+        "/api/budgets",
+        headers=headers,
+        json={"category": "Groceries & Food", "period": "monthly", "amount": "50.00"},
+    )
+    client.post(
+        "/api/budgets",
+        headers=headers,
+        json={"category": "Healthcare & Medical", "period": "monthly", "amount": "30.00"},
+    )
+
+    resp = client.get(
+        "/api/reports/budget?period=monthly&month=2026-06", headers=headers
+    )
+    assert resp.status_code == 200
+
+    actuals = {i["category"]: i["actual"] for i in resp.get_json()["items"]}
+    assert actuals["Groceries & Food"] == 60.0
+    assert actuals["Healthcare & Medical"] == 40.0
+
+
+def test_dashboard_top_categories_include_splits_and_bill_payments(client):
+    """Bug 1.7: dashboard top categories cover splits and bill payments."""
+    token = login(client)
+    headers = auth_headers(token)
+
+    client.post(
+        "/api/expenses",
+        headers=headers,
+        json={
+            "title": "Split big box store",
+            "category": "Clothing & Shopping",
+            "amount": "80.00",
+            "expense_date": date.today().replace(day=2).isoformat(),
+            "splits": [
+                {"category": "Groceries & Food", "amount": "50.00"},
+                {"category": "Entertainment & Fun", "amount": "30.00"},
+            ],
+        },
+    )
+
+    resp = client.post(
+        "/api/bills",
+        headers=headers,
+        json={
+            "payee_name": "Fiber ISP",
+            "bill_category": "Internet & Cable",
+            "bill_date": date.today().replace(day=3).isoformat(),
+            "due_date": date.today().replace(day=3).isoformat(),
+            "status": "Paid",
+            "items": [{"item_name": "Monthly fiber", "quantity": 1, "unit_price": "70.00"}],
+        },
+    )
+    assert resp.status_code == 200
+
+    data = client.get("/api/dashboard", headers=headers).get_json()
+    cats = {c["category"]: c["total"] for c in data["top_cats"]}
+    assert cats.get("Internet & Cable") == 70.0
+    assert cats.get("Groceries & Food") == 50.0
+    assert cats.get("Entertainment & Fun") == 30.0
+    assert "Clothing & Shopping" not in cats
+
+
+def test_weekly_allowance_remaining_uses_monthly_equivalent(client):
+    """Bug 1.8: a weekly allowance compares against ~52/12 of itself, not its
+    raw weekly amount."""
+    token = login(client)
+    headers = auth_headers(token)
+
+    resp = client.post("/api/members", headers=headers, json={"name": "Weekly Kid"})
+    assert resp.status_code == 200
+
+    members = client.get("/api/members", headers=headers).get_json()
+    kid_id = next(m["id"] for m in members if m["name"] == "Weekly Kid")
+    kid_name = "Weekly Kid"
+
+    client.post(
+        "/api/allowances",
+        headers=headers,
+        json={"member_id": kid_id, "amount": "20.00", "frequency": "weekly"},
+    )
+
+    # $25 of spending this month: more than the $20 weekly amount, but well
+    # under the ~$86.67 monthly equivalent.
+    client.post(
+        "/api/expenses",
+        headers=headers,
+        json={
+            "title": "Toys",
+            "category": "Kids & Family",
+            "amount": "25.00",
+            "expense_date": date.today().isoformat(),
+            "member_id": kid_id,
+        },
+    )
+
+    allowances = client.get("/api/allowances", headers=headers).get_json()
+    row = next(a for a in allowances if a["member_name"] == kid_name)
+
+    expected_monthly_cents = round(2000 * 52 / 12)  # 8667
+    assert row["monthly_equivalent_cents"] == expected_monthly_cents
+    assert row["spent_this_month_cents"] == 2500
+    assert row["remaining_this_month"] == round((expected_monthly_cents - 2500) / 100, 2)
+
+
+def test_debt_payoff_extra_cascades_and_minimums_roll_over(client):
+    """Bug 1.9: freed-up minimum payments roll into later months, and leftover
+    extra cascades across multiple debts within one month."""
+    token = login(client)
+    headers = auth_headers(token)
+
+    def add_loan(name, opening, minimum):
+        resp = client.post(
+            "/api/accounts",
+            headers=headers,
+            json={
+                "name": name,
+                "account_type": "Loan",
+                "opening_balance": opening,
+                "interest_rate": 0,
+                "minimum_payment": minimum,
+            },
+        )
+        assert resp.status_code == 200
+
+    add_loan("Cascade Loan A", "1000.00", "100.00")
+    add_loan("Cascade Loan B", "2000.00", "100.00")
+
+    # Baseline, no extra: A clears at month 10; its freed $100 then doubles
+    # B's pace (rollover), finishing at month 15 — not month 20.
+    data = client.get("/api/reports/debt-payoff?extra_payment=0", headers=headers).get_json()
+    snowball = data["snowball"]
+    assert snowball["months"] == 15
+    assert snowball["will_never_be_paid_off"] is False
+
+    # With a $500 extra, the cascade applies leftovers to the NEXT debt in
+    # the same month, finishing far sooner than minimums alone.
+    data = client.get(
+        "/api/reports/debt-payoff?extra_payment=500.00", headers=headers
+    ).get_json()
+    assert data["snowball"]["months"] < snowball["months"] * 0.5
+
+    avalanche = client.get(
+        "/api/reports/debt-payoff?extra_payment=500.00", headers=headers
+    ).get_json()["avalanche"]
+    assert avalanche["months"] > 0
+    assert avalanche["total_interest_cents"] >= 0
+
+
+def test_debt_payoff_honors_zero_minimum_and_flags_never_paid_off(client):
+    """Bug 1.9: a $0 configured minimum is respected (no forced $10 floor),
+    and hopeless plans are flagged instead of reporting month 360 as real."""
+    token = login(client)
+    headers = auth_headers(token)
+
+    # Zero-interest family loan with an intentional $0 minimum: the extra
+    # payment is the only thing paying it down ($100/month -> 10 months).
+    resp = client.post(
+        "/api/accounts",
+        headers=headers,
+        json={
+            "name": "Family loan",
+            "account_type": "Loan",
+            "opening_balance": "1000.00",
+            "interest_rate": 0,
+            "minimum_payment": "0.00",
+        },
+    )
+    assert resp.status_code == 200
+
+    data = client.get(
+        "/api/reports/debt-payoff?extra_payment=100.00", headers=headers
+    ).get_json()
+    assert data["snowball"]["months"] == 10
+    assert data["avalanche"]["months"] == 10
+
+    # Now a runaway debt: 100% APR dwarfs the payments -> never paid off.
+    resp = client.post(
+        "/api/accounts",
+        headers=headers,
+        json={
+            "name": "Runaway card",
+            "account_type": "Credit Card",
+            "opening_balance": "100000.00",
+            "interest_rate": 100,
+            "minimum_payment": "50.00",
+        },
+    )
+    assert resp.status_code == 200
+
+    data = client.get("/api/reports/debt-payoff?extra_payment=0", headers=headers).get_json()
+    assert data["snowball"]["will_never_be_paid_off"] is True
+    assert data["avalanche"]["will_never_be_paid_off"] is True
+    assert "warning" in data["snowball"]
+
+
+def test_bill_payment_list_and_reversal_endpoints(client):
+    """3.2: individual payments can be listed and reversed, with paid_cents
+    and status recomputed automatically."""
+    token = login(client)
+    headers = auth_headers(token)
+
+    resp = client.post(
+        "/api/bills",
+        headers=headers,
+        json={
+            "payee_name": "Reversible Utilities",
+            "bill_category": "Utilities",
+            "bill_date": "2026-06-01",
+            "due_date": "2026-06-15",
+            "items": [{"item_name": "Service", "quantity": 1, "unit_price": "100.00"}],
+        },
+    )
+    bid = resp.get_json()["id"]
+
+    client.post(f"/api/bills/{bid}/pay", headers=headers, json={"amount": "40.00"})
+    client.post(f"/api/bills/{bid}/pay", headers=headers, json={"amount": "60.00"})
+
+    resp = client.get(f"/api/bills/{bid}/payments", headers=headers)
+    assert resp.status_code == 200
+    payments = resp.get_json()["items"]
+    assert len(payments) == 2
+    assert resp.get_json()["total_cents"] == 10000
+
+    payment_id = payments[0]["id"]
+    resp = client.delete(f"/api/bills/{bid}/payments/{payment_id}", headers=headers)
+    assert resp.status_code == 200
+
+    bill = client.get(f"/api/bills/{bid}").get_json()
+    remaining = sum(p["amount_cents"] for p in bill["payments"])
+    assert bill["paid_cents"] == remaining
+    assert bill["status"] == ("Paid" if remaining >= bill["total_cents"] else "Partially Paid" if remaining else "Pending")
+
+    # Reversing the second payment returns the bill to Pending.
+    resp = client.delete(
+        f"/api/bills/{bid}/payments/{payments[1]['id']}", headers=headers
+    )
+    assert resp.status_code == 200
+    bill = client.get(f"/api/bills/{bid}").get_json()
+    assert bill["paid_cents"] == 0
+    assert bill["status"] == "Pending"
+    assert bill["paid_at"] is None
+
+    # Unknown bill / payment -> 404.
+    assert client.delete(f"/api/bills/999/payments/1", headers=headers).status_code == 404
+    assert client.delete(f"/api/bills/{bid}/payments/9999", headers=headers).status_code == 404
+
+
+def test_duplicate_active_allowances_and_budgets_rejected(client):
+    """3.3: two active rules for the same member/frequency (or budgets for the
+    same category/member/period) are rejected with a clean 400."""
+    token = login(client)
+    headers = auth_headers(token)
+
+    client.post("/api/members", headers=headers, json={"name": "Dup Kid"})
+    members = client.get("/api/members", headers=headers).get_json()
+    kid_id = next(m["id"] for m in members if m["name"] == "Dup Kid")
+
+    resp = client.post(
+        "/api/allowances",
+        headers=headers,
+        json={"member_id": kid_id, "amount": "5.00", "frequency": "weekly"},
+    )
+    assert resp.status_code == 200
+
+    resp = client.post(
+        "/api/allowances",
+        headers=headers,
+        json={"member_id": kid_id, "amount": "6.00", "frequency": "weekly"},
+    )
+    assert resp.status_code == 400
+    assert "already exists" in resp.get_json()["error"]
+
+    # Same frequency but different member is fine.
+    client.post("/api/members", headers=headers, json={"name": "Dup Sib"})
+    members = client.get("/api/members", headers=headers).get_json()
+    sib_id = next(m["id"] for m in members if m["name"] == "Dup Sib")
+    resp = client.post(
+        "/api/allowances",
+        headers=headers,
+        json={"member_id": sib_id, "amount": "6.00", "frequency": "weekly"},
+    )
+    assert resp.status_code == 200
+
+    # Budget duplicates.
+    payload = {"category": "Groceries & Food", "period": "monthly", "amount": "10.00"}
+    assert client.post("/api/budgets", headers=headers, json=payload).status_code == 200
+    resp = client.post("/api/budgets", headers=headers, json=payload)
+    assert resp.status_code == 400
+    assert "already exists" in resp.get_json()["error"]
+
+    # Deactivate the first, then creating a replacement succeeds.
+    budgets = client.get(
+        "/api/budgets?period=monthly&category=Groceries+%26+Food", headers=headers
+    ).get_json()
+    target = budgets[0]["id"]
+    client.put(f"/api/budgets/{target}", headers=headers, json={**payload, "is_active": False})
+    resp = client.post("/api/budgets", headers=headers, json=payload)
+    assert resp.status_code == 200
+
+
+def test_new_records_cannot_reference_deactivated_account(client):
+    """3.4: creates validate is_active on referenced accounts."""
+    token = login(client)
+    headers = auth_headers(token)
+
+    resp = client.post(
+        "/api/accounts",
+        headers=headers,
+        json={"name": "Closing Soon", "account_type": "Checking"},
+    )
+    assert resp.status_code == 200
+    account_id = client.get("/api/accounts").get_json()[0]["id"]
+
+    resp = client.delete(f"/api/accounts/{account_id}", headers=headers)
+    assert resp.status_code == 200
+
+    resp = client.post(
+        "/api/expenses",
+        headers=headers,
+        json={
+            "title": "Against closed account",
+            "category": "Other",
+            "amount": "5.00",
+            "expense_date": "2026-06-20",
+            "account_id": account_id,
+        },
+    )
+    assert resp.status_code == 400
+    assert "inactive" in resp.get_json()["error"]
+
+
+def test_expense_member_string_links_to_member_id(client):
+    """3.1: legacy free-text member values link to matching active members."""
+    token = login(client)
+    headers = auth_headers(token)
+
+    client.post("/api/members", headers=headers, json={"name": "Linky"})
+    members = client.get("/api/members", headers=headers).get_json()
+    member_id = next(m["id"] for m in members if m["name"] == "Linky")
+
+    resp = client.post(
+        "/api/expenses",
+        headers=headers,
+        json={
+            "title": "Linked by name",
+            "category": "Other",
+            "amount": "5.00",
+            "expense_date": "2026-06-21",
+            "member": "linky",  # case-insensitive match
+        },
+    )
+    assert resp.status_code == 200
+    detail = client.get(f"/api/expenses/{resp.get_json()['id']}").get_json()
+    assert detail["member"] == "Linky"
+    assert detail["member_id"] == member_id
+
+    # Explicit member_id wins and backfills the canonical name.
+    resp = client.post(
+        "/api/expenses",
+        headers=headers,
+        json={
+            "title": "Linked by id",
+            "category": "Other",
+            "amount": "6.00",
+            "expense_date": "2026-06-21",
+            "member_id": member_id,
+        },
+    )
+    detail = client.get(f"/api/expenses/{resp.get_json()['id']}").get_json()
+    assert detail["member_id"] == member_id
+    assert detail["member"] == "Linky"
+
+
+def test_personal_access_tokens_bearer_auth_flow(app, client):
+    """4.4: scoped, revocable bearer tokens authenticate without cookies or
+    CSRF, and cannot exceed their owner's role."""
+    token = login(client)
+    headers = auth_headers(token)
+
+    resp = client.post(
+        "/api/auth/tokens",
+        headers=headers,
+        json={"name": "cron job", "role": "Editor"},
+    )
+    assert resp.status_code == 200
+    body = resp.get_json()
+    plain_token = body["token"]
+    assert plain_token.startswith("ffpat_")
+
+    bare_client = app.test_client()  # fresh client: no session cookie
+
+    # Read works with just the bearer header.
+    resp = bare_client.get(
+        "/api/dashboard", headers={"Authorization": f"Bearer {plain_token}"}
+    )
+    assert resp.status_code == 200
+
+    # Writes work WITHOUT CSRF because there is no cookie to forge.
+    resp = bare_client.post(
+        "/api/expenses",
+        headers={"Authorization": f"Bearer {plain_token}"},
+        json={
+            "title": "From automation",
+            "category": "Other",
+            "amount": "3.00",
+            "expense_date": "2026-07-01",
+        },
+    )
+    assert resp.status_code == 200
+
+    # The scoped Editor role cannot manage users even though the owner is Admin.
+    resp = bare_client.get("/api/users", headers={"Authorization": f"Bearer {plain_token}"})
+    assert resp.status_code == 403
+
+    # An invalid bearer credential must not silently fall back to any cookie.
+    resp = bare_client.get("/api/dashboard", headers={"Authorization": "Bearer bogus"})
+    assert resp.status_code == 401
+
+    # Listing shows metadata but never the hash/plaintext.
+    listing = client.get("/api/auth/tokens", headers=headers).get_json()
+    entry = next(t for t in listing if t["id"] == body["id"])
+    assert entry["revoked"] == 0
+    assert "token_hash" not in entry and "token" not in entry
+
+    # Revocation kills access immediately.
+    resp = client.delete(f"/api/auth/tokens/{body['id']}", headers=headers)
+    assert resp.status_code == 200
+
+    resp = bare_client.get(
+        "/api/dashboard", headers={"Authorization": f"Bearer {plain_token}"}
+    )
+    assert resp.status_code == 401
+
+
+def test_goal_auto_allocation_on_income(client):
+    """Section 6 sinking funds: a percentage of each income deposit flows to
+    goals configured with allocation_pct."""
+    token = login(client)
+    headers = auth_headers(token)
+
+    resp = client.post(
+        "/api/goals",
+        headers=headers,
+        json={"name": "Car fund", "target": "5000.00", "allocation_pct": 10},
+    )
+    assert resp.status_code == 200
+
+    goal = client.get("/api/goals", headers=headers).get_json()[0]
+    assert goal["allocation_pct"] == 10
+
+    before = goal["current_cents"]
+
+    resp = client.post(
+        "/api/income",
+        headers=headers,
+        json={
+            "title": "Paycheck with allocation",
+            "category": "Salary / Wages",
+            "amount": "250.00",
+            "income_date": "2026-07-02",
+        },
+    )
+    assert resp.status_code == 200
+
+    goal = client.get("/api/goals", headers=headers).get_json()[0]
+    assert goal["current_cents"] == before + 2500  # 10% of $250
+
+
+def test_multi_currency_fields_roundtrip(client):
+    """Section 6 multi-currency: original currency fields persist and settle
+    amount_cents stays in the primary currency."""
+    token = login(client)
+    headers = auth_headers(token)
+
+    resp = client.post(
+        "/api/expenses",
+        headers=headers,
+        json={
+            "title": "Euro purchase",
+            "category": "Other",
+            "amount": "108.00",
+            "expense_date": "2026-07-05",
+            "original_currency": "EUR",
+            "exchange_rate": 1.08,
+            "original_amount": "100.00",
+        },
+    )
+    assert resp.status_code == 200
+    detail = client.get(f"/api/expenses/{resp.get_json()['id']}").get_json()
+    assert detail["original_currency"] == "EUR"
+    assert detail["exchange_rate"] == 1.08
+    assert detail["original_amount_cents"] == 10000
+    assert detail["amount_cents"] == 10800  # settled in primary currency
+
+    # Invalid currency code rejected.
+    resp = client.post(
+        "/api/expenses",
+        headers=headers,
+        json={
+            "title": "Bad fx",
+            "category": "Other",
+            "amount": "1.00",
+            "expense_date": "2026-07-05",
+            "original_currency": "EURO",
+        },
+    )
+    assert resp.status_code == 400
+
+
+def test_forecast_includes_recurring_rules_and_scheduled_bills(client):
+    """Section 6 smarter forecast: recurring rules and unpaid bill balances
+    feed forward-looking projections."""
+    token = login(client)
+    headers = auth_headers(token)
+
+    client.post(
+        "/api/recurring",
+        headers=headers,
+        json={
+            "name": "Forecast salary",
+            "entity_type": "income",
+            "frequency": "monthly",
+            "interval_value": 1,
+            "next_run_date": "2026-09-01",
+            "payload": {"title": "Salary", "amount": "3000.00", "category": "Other"},
+        },
+    )
+
+    resp = client.post(
+        "/api/bills",
+        headers=headers,
+        json={
+            "payee_name": "Scheduled Landlord",
+            "bill_category": "Mortgage / Rent",
+            "bill_date": "2026-09-01",
+            "due_date": "2026-09-05",
+            "items": [{"item_name": "Rent", "quantity": 1, "unit_price": "900.00"}],
+        },
+    )
+    assert resp.status_code == 200
+
+    data = client.get("/api/reports/forecast?months=6", headers=headers).get_json()
+    assert data["recurring_rule_count"] >= 1
+    assert data["recurring_monthly_income"] == 3000.0
+    assert data["scheduled_bills_total"] >= 900.0
+    scheduled_months = [p["scheduled_bills"] for p in data["projection"]]
+    assert any(s > 0 for s in scheduled_months)
+
+
+def test_concurrent_bill_payments_cannot_overpay(app):
+    """Race-condition guard: BEGIN IMMEDIATE locking means parallel payment
+    attempts can never push paid_cents past total_cents."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    setup = app.test_client()
+    resp = setup.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "test-password-123"},
+    )
+    headers = auth_headers(resp.get_json()["csrf_token"])
+
+    resp = setup.post(
+        "/api/bills",
+        headers=headers,
+        json={
+            "payee_name": "Racy Bill",
+            "bill_category": "Other",
+            "bill_date": "2026-06-01",
+            "due_date": "2026-06-15",
+            "items": [{"item_name": "Item", "quantity": 1, "unit_price": "100.00"}],
+        },
+    )
+    bill_id = resp.get_json()["id"]
+
+    barrier = threading.Barrier(8)
+
+    def attempt(i):
+        c = app.test_client()
+        login_resp = c.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "test-password-123"},
+        )
+        csrf = login_resp.get_json()["csrf_token"]
+        barrier.wait(timeout=10)
+        return c.post(
+            f"/api/bills/{bill_id}/pay",
+            headers={"X-CSRF-Token": csrf},
+            json={"amount": "60.00"},  # $60 against a $100 bill: only one fits
+        ).status_code
+
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        codes = list(ex.map(attempt, range(8)))
+
+    bill = setup.get(f"/api/bills/{bill_id}").get_json()
+    assert bill["paid_cents"] <= bill["total_cents"]
+    assert codes.count(200) == 1
+    assert codes.count(400) == 7

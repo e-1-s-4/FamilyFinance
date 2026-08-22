@@ -9,6 +9,21 @@ This README documents the enhanced version of the project, including session aut
 
 ### What's New in This Pass
 
+- **Correct delete semantics.** The five stragglers (`category_delete`, `payee_delete`, `bill_delete`, `expense_delete`, `income_delete`) now return `404` for unknown ids like every other delete endpoint, and `PUT /api/payees/<id>` gained the same existence check.
+- **Partial updates no longer wipe transaction splits.** `expense_update`/`income_update` only replace splits when the client actually sends a `"splits"` key; editing just `notes` keeps every split allocation intact (an explicit `"splits": []` still means "clear them").
+- **Payee references validated everywhere.** An invalid `payee_id` is rejected with a clean `400` even when a free-text `payee_name` is also supplied, and payee resolution (name/email/address backfill) is centralized in `parse_bill_payload` so recurring bill rules with only a `payee_id` generate bills with the real payee name instead of a blank one.
+- **Row-isolated CSV imports with flexible dates.** Each imported row runs in its own `SAVEPOINT`: a bad row fails alone and is reported in a new `failed: [{row, error}]` array instead of rolling back the whole file. Dates accept `YYYY-MM-DD`, `MM/DD/YYYY`, `DD/MM/YYYY`, `YYYY/MM/DD`, `DD.MM.YYYY`, and `MM-DD-YYYY`. The frontend import dialog now includes manual column mapping with a live preview and an explicit date-format picker.
+- **Split-aware category reporting.** Budget-vs-actual and dashboard top categories count split allocations under their split categories (no double counting of the parent expense), and the dashboard's top-category breakdown finally includes bill payments.
+- **Weekly allowances measured against a monthly window correctly.** Weekly amounts are scaled by 52/12 before comparing to month-to-date spending, so a $20/week allowance shows ~$86.67/month of headroom.
+- **Honest debt payoff simulation.** Leftover extra payments cascade across debts within a month; when a debt dies its freed-up minimum rolls into later months (real snowball/avalanche behavior); user-configured minimums are honored exactly (including intentional $0); plans that can't converge are flagged with `will_never_be_paid_off` instead of silently reporting "360 months".
+- **Consistent reminder dates.** `/api/reminders` computes one local date in Python and passes it into SQL, so inclusion filters and day counts can no longer disagree by a day near midnight on non-UTC servers.
+- **Reliability hardening.** Startup now requires SQLite ≥ 3.35 (for `INSERT ... RETURNING`) with a clear error on older builds; request-body limits are configurable via `FF_MAX_CONTENT_LENGTH_MB` (default 50 MB) so real-world database restores don't 413; restore responses recommend a process restart so other workers drop stale connections; login throttling adds a per-username limiter alongside the per-IP one.
+- **Personal access tokens.** Create scoped, revocable `ffpat_...` bearer tokens (role-limited, stored hashed, plaintext shown once) for cron jobs, Home Assistant, or receipt webhooks — no cookies or CSRF needed.
+- **Bill payment management.** New `GET/DELETE /api/bills/<id>/payments[/<payment_id>]` routes let you audit and reverse individual payments, automatically recomputing `paid_cents` and status. The UI exposes this via a Payments dialog on each bill.
+- **New features.** Recurring-aware cash-flow forecast (blends active rule schedules and unpaid bill due dates into projections), sinking-fund auto-allocation (goals accept `allocation_pct`, funded from every income deposit), optional multi-currency fields on expenses/income (`original_currency`, `exchange_rate`, `original_amount`), and member references upgraded from free text to a validated `member_id` foreign key with best-effort name matching during the transition.
+
+### What's New in the Previous Pass
+
 - **Reliability fixes.** `GET /api/payees?q=...` no longer fails with a database error when bills exist (an ambiguous-column bug); `POST /api/bills/<id>/void` now returns `404` for unknown or deleted bills instead of silently succeeding; bill payments validate `account_id` and return a clean `400` instead of a database error.
 - **Resilient recurring runs.** `POST /api/recurring/run` processes each rule inside its own savepoint, so one malformed rule can no longer abort the whole batch or roll back other rules' created items. The response now includes a `failed` array describing any rule that could not be processed, alongside the familiar `created` array, and each failure raises a notification.
 - **Faster reports.** Dashboard trends, annual reports, cash-flow series, account balances/net worth, debt payoff, forecast, and allowance tracking were rewritten from per-row/per-month/per-account query loops into grouped aggregate queries — an order of magnitude fewer SQL round-trips on populated databases.
@@ -146,7 +161,7 @@ This README documents the enhanced version of the project, including session aut
 
 - **Python 3.10+**
 - **Flask**
-- **SQLite**
+- **SQLite 3.35+** (March 2021) — the bill numbering sequence uses `INSERT ... ON CONFLICT ... RETURNING`. The app checks the version at startup and fails with a clear message on older builds (e.g. RHEL/CentOS 8-era system SQLite).
 - **Werkzeug password hashing**
 - **Standard library modules**:
   - `sqlite3`
@@ -253,6 +268,7 @@ python app.py
 | `FF_SECURE_COOKIES` | No | `0` | Set to `1` when serving over HTTPS. Makes session cookies secure. |
 | `FF_HSTS` | No | `0` | Set to `1` to send HTTP Strict Transport Security header. Use only with HTTPS. |
 | `FF_ALLOW_DEV_SECRET` | No | `1` | If `0`, the app refuses to start without `FF_SECRET_KEY`. |
+| `FF_MAX_CONTENT_LENGTH_MB` | No | `50` | Maximum request body size in MB. Applies to CSV imports and database restores; raise it if your backups grow past the default. |
 | `FF_HOST` | No | `127.0.0.1` | Host for the built-in development server. |
 | `FF_PORT` | No | `5000` | Port for the built-in development server. |
 | `FF_DEBUG` | No | `0` | Set to `1` to enable Flask debug mode. Do not use in production. |
@@ -434,6 +450,38 @@ POST /api/auth/logout
 ```
 
 This clears the session.
+
+### Personal Access Tokens (Bearer auth)
+
+For cron jobs, Home Assistant, receipt-scanning webhooks, or any other
+headless automation, create a personal access token instead of sharing a
+session:
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/auth/tokens` | List your tokens (Admins see all). Metadata only — hashes are never returned. |
+| `POST` | `/api/auth/tokens` | Create a token: `{"name": "cron job", "role": "Editor"}`. Returns the plaintext token **once**. |
+| `DELETE` | `/api/auth/tokens/<id>` | Revoke a token. Owners and Admins only. |
+
+Tokens are stored as SHA-256 hashes, are prefixed `ffpat_`, can never grant a
+stronger role than their owner currently has, and stop working the moment the
+owner's role is demoted below the token's scope or the token is revoked.
+
+Authenticate with:
+
+```http
+Authorization: Bearer ffpat_your-token-here
+```
+
+Bearer requests do not need the CSRF header (CSRF defends cookie sessions,
+which tokens don't use):
+
+```bash
+curl -H "Authorization: Bearer ffpat_..." \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Imported","category":"Other","amount":"5.00","expense_date":"2026-07-01"}' \
+  http://localhost:5000/api/expenses
+```
 
 ---
 
@@ -930,6 +978,8 @@ Query parameters:
 | `PUT` | `/api/bills/<id>` | Update bill or change status. |
 | `DELETE` | `/api/bills/<id>` | Soft-delete bill. |
 | `POST` | `/api/bills/<id>/pay` | Record payment. |
+| `GET` | `/api/bills/<id>/payments` | List payments for a bill. |
+| `DELETE` | `/api/bills/<id>/payments/<payment_id>` | Reverse one payment; `paid_cents` and status are recomputed automatically. |
 | `POST` | `/api/bills/<id>/void` | Void bill. |
 | `GET` | `/api/bills/<id>/print` | Printable bill HTML. |
 | `GET` | `/api/bills/export` | Export bills as CSV. |
@@ -1116,9 +1166,14 @@ This means the stored status is pending or partially paid, but the due date has 
   "target": "10000.00",
   "current": "1500.00",
   "target_date": "2027-12-31",
+  "allocation_pct": 10,
   "notes": "Six months of expenses"
 }
 ```
+
+`allocation_pct` (0–100) turns the goal into a sinking fund: that percentage
+of every recorded income deposit is automatically added to `current_cents`,
+with a notification per allocation.
 
 #### Contribute Payload
 
@@ -1284,6 +1339,20 @@ Returns monthly:
 - Savings
 - Savings rate
 
+### Forecast Report
+
+```text
+GET /api/reports/forecast?months=12
+```
+
+Forward-looking net-worth projection. When active recurring rules exist, the
+projection blends the backward-looking 90-day averages with the normalized
+monthly impact of those rules (50/50), and adds the outstanding balances of
+already-issued unpaid bills to their due month as `scheduled_bills`. The
+response includes `recurring_monthly_income`, `recurring_monthly_outflow`,
+`recurring_rule_count`, and per-row `scheduled_bills` alongside the historical
+baseline fields.
+
 ### Payee Report
 
 ```text
@@ -1353,6 +1422,104 @@ Example cron job:
 ```
 
 For a real production system, consider replacing this with an internal scheduler or authenticated service token.
+
+---
+
+## CSV Import
+
+Bank statement CSVs can be imported into expenses or income from the
+frontend (Expenses/Income → **Import CSV**) or via the API.
+
+### Preview
+
+```http
+POST /api/import/csv/preview
+Content-Type: multipart/form-data
+Field: file (a .csv file)
+```
+
+Returns the detected `headers`, `sample_rows`, and `total_rows`.
+
+### Commit
+
+```http
+POST /api/import/csv/commit
+```
+
+```json
+{
+  "target_type": "expense",
+  "items": [
+    {"title": "Grocery run", "amount": 42.5, "date": "06/22/2026", "category": "Other"}
+  ]
+}
+```
+
+Behavior:
+
+- **Row isolation.** Every row is committed inside its own `SAVEPOINT`. A bad
+  row fails alone and is reported in the response; it never aborts the rest
+  of the file:
+
+  ```json
+  {
+    "success": true,
+    "imported_count": 48,
+    "failed_rows": 1,
+    "failed": [{"row": 17, "error": "date must be a valid date (YYYY-MM-DD or MM/DD/YYYY)"}],
+    "total_rows": 49
+  }
+  ```
+
+- **Flexible dates.** `YYYY-MM-DD`, `MM/DD/YYYY` (US), `DD/MM/YYYY`,
+  `YYYY/MM/DD`, `DD.MM.YYYY`, and `MM-DD-YYYY` are accepted. Ambiguous values
+  resolve US-first (`03/04/2026` → March 4); pick an explicit date format in
+  the import dialog to remove any doubt.
+- **Manual column mapping.** The frontend dialog shows your file's real
+  headers with dropdowns to assign each target field (Date, Description,
+  Amount, Category, Notes), a date-format picker, an optional account
+  assignment, and a live preview of the first mapped rows before anything is
+  committed.
+- Amounts are imported as positive values; signs are ignored (bank exports
+  mark debits either way).
+
+---
+
+## Data Model Notes
+
+### Member references (`member_id`)
+
+Expenses, income, and splits support both the legacy free-text `member` field
+and a proper `member_id INTEGER REFERENCES members(id)`. Precedence:
+
+- An explicit valid `member_id` wins and backfills the canonical member name.
+- Otherwise a non-empty `member` string is matched **case-insensitively**
+  against active members and linked when found — so "alice" links to "Alice".
+- Unmatched strings are stored as display-only text (legacy behavior), which
+  is why the column remains during the transition.
+
+New records may only reference *active* members and accounts: referencing a
+deactivated account/member returns a `400` ("…is inactive…"). Existing records
+that point at since-deactivated rows keep rendering — that's why deletes are
+soft.
+
+### Duplicate prevention
+
+Only one active rule per combination is accepted:
+
+- One allowance per `(member_id, frequency)`.
+- One active budget per `(category, member, period)`.
+
+Attempts return a clean `400`; where the existing data allows, matching
+partial UNIQUE indexes enforce this at the database level too.
+
+### Multi-currency fields (informational)
+
+Expenses/income accept optional `original_currency` (3-letter code),
+`exchange_rate` (> 0, required when a currency is set), and `original_amount`
+or `original_amount_cents`. The settled `amount_cents` always remains in the
+household's primary currency; these fields preserve what actually happened in
+the foreign currency for reference and future conversion features.
 
 ---
 
@@ -1429,14 +1596,21 @@ X-CSRF-Token: YOUR_CSRF_TOKEN
 
 ### Rate Limiting
 
-The application includes simple in-memory rate limiting.
+The application includes simple in-memory rate limiting: a global per-IP API
+guard, a strict per-IP login limiter, and a looser per-username login limiter
+(so credential stuffing against one known account from many IPs is still
+capped).
 
-For production, use a stronger rate limiter or reverse proxy protection such as:
+**Important:** the limiter state lives in one process. If you run multiple
+worker processes (`gunicorn -w 4`, for example), each worker enforces its own
+table and the effective limits are multiplied by the worker count — silently.
+For production either:
 
-- Nginx rate limiting
-- Fail2ban
-- Cloudflare WAF
-- Application-level Redis rate limiting
+- run a **single worker** (SQLite is the storage engine anyway; threads within
+  one process scale fine for a household app),
+- put rate limiting in your reverse proxy (Nginx `limit_req`, Cloudflare,
+  Fail2ban), or
+- replace the `RateLimiter` class with a shared-store implementation (Redis).
 
 ### Security Headers
 
@@ -1445,7 +1619,22 @@ The application sets:
 - `X-Content-Type-Options: nosniff`
 - `X-Frame-Options: DENY`
 - `Referrer-Policy: strict-origin-when-cross-origin`
+- `Content-Security-Policy` (`default-src 'self'`, inline script/style allowed
+  as a first step since the SPA uses inline handlers; Google Fonts origins are
+  whitelisted for styles/fonts)
 - Optional HSTS when enabled
+
+### Backups Contain Credentials
+
+`.db` backup files include the full database — including the
+`users.password_hash` column. Treat them exactly like credentials:
+
+- Download only over HTTPS.
+- Encrypt at rest if stored off-server.
+- Never commit them to version control (`.gitignore` already excludes them).
+- After `POST /api/admin/restore`, **restart the FamilyFinance process** so
+  every worker drops stale connections to pre-restore data; the endpoint's
+  response includes `"restart_recommended": true` as a reminder.
 
 ### Production Security Checklist
 
@@ -1465,7 +1654,7 @@ The application sets:
 
 ## Testing
 
-If you include the test suite:
+The test suite lives at:
 
 ```text
 tests/test_app.py
@@ -1483,16 +1672,22 @@ Run:
 pytest -q
 ```
 
-Example test coverage may include:
+Coverage includes:
 
-- Health endpoint
-- Login
-- CSRF enforcement
-- Dashboard access
-- Expense creation
-- Expense listing
-- Authentication failure
-- Basic authorization behavior
+- Health, login, CSRF enforcement, roles, and user management
+- Full expense/income/bill/budget/goal lifecycles including splits
+- Delete-endpoint 404 semantics for all soft/hard delete routes
+- Partial updates preserving transaction splits
+- Payee validation (invalid `payee_id` with `payee_name` → 400) and recurring payee resolution
+- CSV import row isolation and flexible date formats
+- Split-aware budget reports and dashboard categories
+- Weekly allowance monthly-equivalent math
+- Debt payoff cascade, rollover, zero-minimum handling, and non-payoff flagging
+- Concurrent bill payments cannot overpay a bill (threaded race test)
+- Personal access token create/use/revoke flow
+- Bill payment list & reversal with automatic status recomputation
+- Duplicate allowance/budget rejection and inactive-reference validation
+- Goal auto-allocation, multi-currency fields, and the recurring-aware forecast
 
 ---
 
@@ -1519,6 +1714,11 @@ Run:
 ```bash
 gunicorn -b 0.0.0.0:5000 "app:create_app()"
 ```
+
+> **Worker count:** keep one worker unless you move rate limiting to shared
+> storage — the built-in limiter is per-process, so `-w 4` silently weakens
+> it 4×. SQLite handles this app's concurrency fine through threads within a
+> single worker.
 
 With environment variables:
 
@@ -1813,29 +2013,29 @@ familyfinance/
 
 Potential future enhancements:
 
-- [ ] Full frontend dashboard
-- [ ] Bank statement CSV import
+- [x] Full frontend dashboard
+- [x] Bank statement CSV import (row-isolated, with column mapping)
+- [x] Split transactions
+- [x] Debt payoff planner
+- [x] Cash flow forecasting (recurring-rule aware)
+- [x] Allowance tracking for children
+- [x] API tokens
+- [x] Backup restore UI
 - [ ] OFX/QIF import
 - [ ] Receipt image upload
 - [ ] OCR receipt extraction
 - [ ] Email notifications
 - [ ] Browser push notifications
-- [ ] Multi-currency exchange rates
-- [ ] Split transactions
-- [ ] Debt payoff planner
-- [ ] Cash flow forecasting
+- [ ] Multi-currency exchange-rate lookup (fields are stored; automatic rate fetching is not)
 - [ ] Mobile-first UI
 - [ ] Progressive Web App support
 - [ ] PostgreSQL support
 - [ ] Alembic migrations
 - [ ] OpenAPI documentation
-- [ ] API tokens
 - [ ] Two-factor authentication
 - [ ] Family invitations and approvals
-- [ ] Allowance tracking for children
 - [ ] Scheduled automatic recurring execution
 - [ ] Full audit log viewer UI
-- [ ] Backup restore UI
 
 ---
 
