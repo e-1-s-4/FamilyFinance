@@ -296,7 +296,7 @@
   .sidebar {
     background: var(--green);
     color: #EFEAD8;
-    padding: 22px 16px 18px;
+    padding: 16px 14px 14px;
     position: sticky;
     top: 0;
     height: 100vh;
@@ -317,8 +317,8 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 0 6px 20px;
-    margin-bottom: 12px;
+    padding: 0 6px 14px;
+    margin-bottom: 10px;
     border-bottom: 1px solid rgba(239,234,216,.14);
   }
 
@@ -333,32 +333,32 @@
 
   .nav-scroll { flex: 1; overflow-y: auto; padding-right: 2px; }
 
-  .nav-group { margin-bottom: 18px; }
+  .nav-group { margin-bottom: 11px; }
 
   .nav-group-label {
-    font-size: 10.5px;
+    font-size: 10px;
     font-weight: 700;
     letter-spacing: .12em;
     text-transform: uppercase;
     color: rgba(239,234,216,.5);
     padding: 0 10px;
-    margin-bottom: 6px;
+    margin-bottom: 4px;
   }
 
   .nav-btn {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 9px;
     width: 100%;
     text-align: left;
     border: 0;
     background: transparent;
-    padding: 9px 10px;
-    border-radius: 9px;
+    padding: 7px 10px;
+    border-radius: 8px;
     cursor: pointer;
     color: rgba(239,234,216,.86);
-    margin-bottom: 2px;
-    font-size: 13.5px;
+    margin-bottom: 1px;
+    font-size: 13px;
     font-weight: 500;
   }
 
@@ -373,10 +373,10 @@
   }
 
   .nav-foot {
-    padding-top: 14px;
+    padding-top: 10px;
     border-top: 1px solid rgba(239,234,216,.14);
-    font-size: 11.5px;
-    color: rgba(239,234,216,.45);
+    font-size: 11px;
+    color: rgba(239,234,216,.5);
   }
 
   .main-col { display: flex; flex-direction: column; min-width: 0; }
@@ -1093,6 +1093,22 @@
 
         <div class="grid cols-2 section">
           <div class="card">
+            <div class="card-head">
+              <div><h3>Financial Health</h3><div class="sub">Score and actionable guidance for this month</div></div>
+            </div>
+            <div class="card-pad" id="dashboardHealth"></div>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <div><h3>Bill Reminders</h3><div class="sub">Overdue &amp; upcoming within 14 days</div></div>
+              <button class="btn ghost small" onclick="showTab('bills')">All bills →</button>
+            </div>
+            <div class="card-pad" id="dashboardReminders"></div>
+          </div>
+        </div>
+
+        <div class="grid cols-2 section">
+          <div class="card">
             <div class="card-head"><h3>Recent Expenses</h3><button class="btn ghost small" onclick="showTab('expenses')">View all →</button></div>
             <div class="table-wrap" id="dashboardRecentExpenses"></div>
           </div>
@@ -1120,6 +1136,7 @@
                 <input type="search" class="search-input" id="expensesSearch" placeholder="Search title, store, notes…" oninput="debouncedReload('expenses')" />
                 <select id="expensesCategoryFilter" onchange="loadExpenses(0)"><option value="">All categories</option></select>
                 <select id="expensesMemberFilter" onchange="loadExpenses(0)"><option value="">All members</option></select>
+                <select id="expensesAccountFilter" onchange="loadExpenses(0)"><option value="">All accounts</option></select>
                 <input type="date" id="expensesFrom" onchange="loadExpenses(0)" title="From date" />
                 <input type="date" id="expensesTo" onchange="loadExpenses(0)" title="To date" />
               </div>
@@ -1134,7 +1151,7 @@
       <section id="tab-income" class="view hidden">
         <div class="card">
           <div class="card-head">
-            <div><h3>Income</h3><div class="sub">Every dollar coming in</div></div>
+            <div><h3>Income</h3><div class="sub" id="incomeSub">Every dollar coming in</div></div>
             <div class="action-row">
               <button class="btn secondary small" onclick="exportEntity('income')">⇩ Export CSV</button>
               <button class="btn secondary small role-gate" data-role="Admin,Editor" onclick="openCsvImportModal('income')">📥 Import CSV</button>
@@ -1147,6 +1164,7 @@
                 <input type="search" class="search-input" id="incomeSearch" placeholder="Search title, source, notes…" oninput="debouncedReload('income')" />
                 <select id="incomeCategoryFilter" onchange="loadIncome(0)"><option value="">All categories</option></select>
                 <select id="incomeMemberFilter" onchange="loadIncome(0)"><option value="">All members</option></select>
+                <select id="incomeAccountFilter" onchange="loadIncome(0)"><option value="">All accounts</option></select>
                 <input type="date" id="incomeFrom" onchange="loadIncome(0)" title="From date" />
                 <input type="date" id="incomeTo" onchange="loadIncome(0)" title="To date" />
               </div>
@@ -1161,7 +1179,7 @@
       <section id="tab-bills" class="view hidden">
         <div class="card">
           <div class="card-head">
-            <div><h3>Bills</h3><div class="sub">Track what's owed and what's been paid</div></div>
+            <div><h3>Bills</h3><div class="sub" id="billsSub">Track what's owed and what's been paid</div></div>
             <div class="action-row">
               <button class="btn secondary small" onclick="exportEntity('bills')">⇩ Export CSV</button>
               <button class="btn small role-gate" data-role="Admin,Editor" onclick="openBillModal()">+ New Bill</button>
@@ -1180,6 +1198,7 @@
                   <option value="Void">Void</option>
                 </select>
                 <select id="billsCategoryFilter" onchange="loadBills(0)"><option value="">All categories</option></select>
+                <select id="billsAccountFilter" onchange="loadBills(0)"><option value="">All accounts</option></select>
                 <input type="date" id="billsFrom" onchange="loadBills(0)" title="From date" />
                 <input type="date" id="billsTo" onchange="loadBills(0)" title="To date" />
               </div>
@@ -1262,9 +1281,20 @@
         <div class="card">
           <div class="card-head">
             <div><h3>Accounts</h3><div class="sub">Checking, savings, cards, loans, and more</div></div>
-            <button class="btn small role-gate" data-role="Admin,Editor" onclick="openAccountModal()">+ Add Account</button>
+            <div class="action-row">
+              <button class="btn secondary small role-gate" data-role="Admin,Editor" onclick="openTransferModal()">⇄ Transfer Money</button>
+              <button class="btn small role-gate" data-role="Admin,Editor" onclick="openAccountModal()">+ Add Account</button>
+            </div>
           </div>
           <div class="card-pad" id="accountsList"></div>
+        </div>
+
+        <div class="card section">
+          <div class="card-head">
+            <div><h3>Account Transfers</h3><div class="sub" id="transfersSub">Internal movements &amp; card/loan payments (net-worth neutral)</div></div>
+          </div>
+          <div class="table-wrap" id="transfersTable"></div>
+          <div class="pagination card-pad" id="transfersPagination" style="margin-top:0;"></div>
         </div>
       </section>
 
@@ -1355,7 +1385,7 @@
             <div><h3>Debt Payoff Planner</h3><div class="sub">Compare Snowball vs. Avalanche strategies for Credit Cards and Loans</div></div>
             <div class="action-row">
               <span style="font-size:13px;color:var(--muted);">Extra Monthly Payment:</span>
-              <input type="number" id="debtExtraPayment" step="10" min="0" value="100" style="width:100px;padding:6px;" oninput="loadDebtPayoff()" />
+              <input type="number" id="debtExtraPayment" step="10" min="0" value="100" style="width:100px;padding:6px;" oninput="debouncedDebtReload()" />
             </div>
           </div>
           <div class="card-pad" id="debtPayoffContent"></div>
@@ -1505,7 +1535,11 @@ function fmtDateTime(value) {
 }
 
 function todayIso() {
-  return new Date().toISOString().slice(0, 10);
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 function debounce(fn, wait) {
@@ -1659,7 +1693,13 @@ function openModal({ title, bodyHtml, footHtml, wide, onClose }) {
   // Restore focus to the trigger element when the dialog closes.
   overlay._previouslyFocused = document.activeElement;
   const firstInput = overlay.querySelector("input, select, textarea");
-  if (firstInput) setTimeout(() => firstInput.focus(), 30);
+  if (firstInput) {
+    requestAnimationFrame(() => {
+      if (document.contains(firstInput) && !overlay.contains(document.activeElement)) {
+        firstInput.focus();
+      }
+    });
+  }
 }
 
 function modalEscHandler(e) {
@@ -2038,6 +2078,8 @@ const MODAL_SELECT_BUILDERS = {
   billAccount: (cur) => accountOptions(cur),
   payAccount: (cur) => accountOptions(cur),
   rpAccount: (cur) => accountOptions(cur),
+  trFromAccount: (cur) => accountOptions(cur, { includeNone: false }),
+  trToAccount: (cur) => accountOptions(cur, { includeNone: false }),
   billPayeeSelect: (cur) => payeeOptions(cur),
   expCategory: (cur) => categoryOptions("expense", cur),
   incCategory: (cur) => categoryOptions("income", cur),
@@ -2047,7 +2089,7 @@ const MODAL_SELECT_BUILDERS = {
 
 const MODAL_SELECT_ENTITY = {
   members: ["expMember", "incMember", "rpMember", "budMember", "alMember"],
-  accounts: ["expAccount", "incAccount", "billAccount", "payAccount", "rpAccount"],
+  accounts: ["expAccount", "incAccount", "billAccount", "payAccount", "rpAccount", "trFromAccount", "trToAccount"],
   payees: ["billPayeeSelect"],
   categories: ["expCategory", "incCategory", "budCategory", "payCategory"],
 };
@@ -2070,9 +2112,9 @@ function refreshModalSelects(entity) {
 
   // Split rows are generated with classes rather than ids.
   if (entity === "members") {
-    overlay.querySelectorAll("select.es-member").forEach((sel) => {
+    overlay.querySelectorAll("select.es-member, select.is-member").forEach((sel) => {
       const cur = sel.value;
-      sel.innerHTML = memberOptions(cur);
+      sel.innerHTML = memberOptions(cur, { includeAll: false });
       if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
     });
   }
@@ -2102,6 +2144,9 @@ async function loadMembersCache() {
 
 async function loadAccountsCache() {
   try { state.caches.accounts = await api("/api/accounts"); } catch (err) { state.caches.accounts = []; }
+  fillAccountFilterSelect($("expensesAccountFilter"));
+  fillAccountFilterSelect($("incomeAccountFilter"));
+  fillAccountFilterSelect($("billsAccountFilter"));
   emitEntityChanged("accounts");
 }
 
@@ -2159,8 +2204,13 @@ function evenSplitAcrossMembers(totalAmount) {
   }));
 }
 
-function accountOptions(selected) {
-  return optionsHtml(state.caches.accounts, { value: "id", label: (a) => `${a.name} (${a.account_type})`, selected, blankLabel: "— None —" });
+function accountOptions(selected, { includeNone = true } = {}) {
+  return optionsHtml(state.caches.accounts, {
+    value: "id",
+    label: (a) => `${a.name} (${a.account_type})`,
+    selected,
+    blankLabel: includeNone ? "— None —" : undefined,
+  });
 }
 
 function payeeOptions(selected) {
@@ -2182,6 +2232,14 @@ function fillMemberFilterSelect(selectEl) {
   selectEl.value = current;
 }
 
+function fillAccountFilterSelect(selectEl) {
+  if (!selectEl) return;
+  const current = selectEl.value;
+  selectEl.innerHTML = `<option value="">All accounts</option>` +
+    optionsHtml(state.caches.accounts, { value: "id", label: (a) => `${a.name} (${a.account_type})`, selected: current });
+  if ([...selectEl.options].some((o) => o.value === current)) selectEl.value = current;
+}
+
 /* =========================================================================
    LIGHTWEIGHT SVG CHARTS (no external dependencies)
    ========================================================================= */
@@ -2198,14 +2256,21 @@ function cssVar(name) {
 function groupedBarChart(data, opts) {
   opts = opts || {};
   const w = opts.width || 640, h = opts.height || 220;
-  const padL = 44, padB = 26, padT = 10, padR = 10;
+  const padL = 52, padB = 26, padT = 10, padR = 10;
   const chartW = w - padL - padR, chartH = h - padT - padB;
 
   if (!data.length) return `<div class="empty-state" style="padding:30px;">No data for this period yet.</div>`;
 
-  const allVals = data.flatMap((d) => d.values.map((v) => v.value));
-  const maxVal = Math.max(1, ...allVals);
-  const niceMax = maxVal <= 0 ? 1 : Math.pow(10, Math.floor(Math.log10(maxVal))) * Math.ceil(maxVal / Math.pow(10, Math.floor(Math.log10(maxVal))));
+  const allVals = data.flatMap((d) => d.values.map((v) => Number(v.value || 0)));
+  const rawMax = Math.max(0, ...allVals);
+  const rawMin = Math.min(0, ...allVals);
+  const maxAbs = Math.max(1, rawMax, Math.abs(rawMin));
+  const mag = Math.pow(10, Math.floor(Math.log10(maxAbs)));
+  const stepUnit = mag / 2;
+  const niceMax = rawMax > 0 ? Math.ceil(rawMax / stepUnit) * stepUnit : (rawMin < 0 ? 0 : 1);
+  const niceMin = rawMin < 0 ? -Math.ceil(Math.abs(rawMin) / stepUnit) * stepUnit : 0;
+  const span = Math.max(1, niceMax - niceMin);
+  const zeroY = padT + (niceMax / span) * chartH;
 
   const groupW = chartW / data.length;
   const seriesCount = data[0].values.length;
@@ -2216,18 +2281,24 @@ function groupedBarChart(data, opts) {
   let gridLines = "";
   const gridCount = 4;
   for (let i = 0; i <= gridCount; i++) {
+    const val = niceMin + (span * i) / gridCount;
     const y = padT + chartH - (chartH * i) / gridCount;
-    gridLines += `<line x1="${padL}" y1="${y}" x2="${w - padR}" y2="${y}" stroke="${cssVar('--line')}" stroke-width="1"/>`;
-    gridLines += `<text x="${padL - 8}" y="${y + 3}" font-size="9" text-anchor="end" fill="${cssVar('--muted')}">${Math.round((niceMax * i) / gridCount)}</text>`;
+    gridLines += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${w - padR}" y2="${y.toFixed(1)}" stroke="${cssVar('--line')}" stroke-width="1"/>`;
+    gridLines += `<text x="${padL - 8}" y="${(y + 3).toFixed(1)}" font-size="9" text-anchor="end" fill="${cssVar('--muted')}">${Math.round(val)}</text>`;
+  }
+  if (niceMin < 0 && niceMax > 0) {
+    gridLines += `<line x1="${padL}" y1="${zeroY.toFixed(1)}" x2="${w - padR}" y2="${zeroY.toFixed(1)}" stroke="${cssVar('--ink-soft')}" stroke-width="1" stroke-dasharray="3,3"/>`;
   }
 
   data.forEach((group, gi) => {
     const groupX = padL + gi * groupW + 8;
     group.values.forEach((v, vi) => {
-      const barH = niceMax > 0 ? (Math.abs(v.value) / niceMax) * chartH : 0;
+      const val = Number(v.value || 0);
+      const barH = (Math.abs(val) / span) * chartH;
       const x = groupX + vi * (barW + barGap);
-      const y = padT + chartH - barH;
-      bars += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(0,barH).toFixed(1)}" rx="2" fill="${v.color}"><title>${escapeHtml(group.label)} — ${escapeHtml(v.key)}: ${v.value.toFixed(2)}</title></rect>`;
+      const y = val >= 0 ? zeroY - barH : zeroY;
+      const fill = (val < 0 && seriesCount === 1) ? cssVar('--rust') : v.color;
+      bars += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(0, barH).toFixed(1)}" rx="2" fill="${fill}"><title>${escapeHtml(group.label)} — ${escapeHtml(v.key)}: ${val.toFixed(2)}</title></rect>`;
     });
     bars += `<text x="${(groupX + groupW / 2 - 8).toFixed(1)}" y="${h - 6}" font-size="10" text-anchor="middle" fill="${cssVar('--muted')}">${escapeHtml(group.label)}</text>`;
   });
@@ -2240,22 +2311,30 @@ function donutChart(data, opts) {
   opts = opts || {};
   const size = opts.size || 180;
   const cx = size / 2, cy = size / 2, r = size / 2 - 10, inner = r * 0.6;
-  const total = data.reduce((s, d) => s + d.value, 0);
+  const slices = data.filter((d) => Number(d.value || 0) > 0);
+  const total = slices.reduce((s, d) => s + Number(d.value || 0), 0);
 
   if (!total) return `<div class="empty-state" style="padding:24px;">No data yet.</div>`;
 
   let angle = -Math.PI / 2;
   let paths = "";
 
-  data.forEach((d) => {
-    const frac = d.value / total;
+  slices.forEach((d) => {
+    const val = Number(d.value || 0);
+    const frac = val / total;
+    if (slices.length === 1 || frac >= 0.9999) {
+      const midR = (r + inner) / 2;
+      const sw = r - inner;
+      paths += `<circle cx="${cx}" cy="${cy}" r="${midR.toFixed(2)}" fill="none" stroke="${d.color}" stroke-width="${sw.toFixed(2)}"><title>${escapeHtml(d.label)}: ${val.toFixed(2)}</title></circle>`;
+      return;
+    }
     const nextAngle = angle + frac * Math.PI * 2;
     const x1 = cx + r * Math.cos(angle), y1 = cy + r * Math.sin(angle);
     const x2 = cx + r * Math.cos(nextAngle), y2 = cy + r * Math.sin(nextAngle);
     const ix1 = cx + inner * Math.cos(angle), iy1 = cy + inner * Math.sin(angle);
     const ix2 = cx + inner * Math.cos(nextAngle), iy2 = cy + inner * Math.sin(nextAngle);
     const largeArc = frac > 0.5 ? 1 : 0;
-    paths += `<path d="M ${ix1.toFixed(2)} ${iy1.toFixed(2)} L ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r} ${r} 0 ${largeArc} 1 ${x2.toFixed(2)} ${y2.toFixed(2)} L ${ix2.toFixed(2)} ${iy2.toFixed(2)} A ${inner} ${inner} 0 ${largeArc} 0 ${ix1.toFixed(2)} ${iy1.toFixed(2)} Z" fill="${d.color}"><title>${escapeHtml(d.label)}: ${d.value.toFixed(2)}</title></path>`;
+    paths += `<path d="M ${ix1.toFixed(2)} ${iy1.toFixed(2)} L ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r} ${r} 0 ${largeArc} 1 ${x2.toFixed(2)} ${y2.toFixed(2)} L ${ix2.toFixed(2)} ${iy2.toFixed(2)} A ${inner} ${inner} 0 ${largeArc} 0 ${ix1.toFixed(2)} ${iy1.toFixed(2)} Z" fill="${d.color}"><title>${escapeHtml(d.label)}: ${val.toFixed(2)}</title></path>`;
     angle = nextAngle;
   });
 
@@ -2290,9 +2369,12 @@ async function loadDashboard() {
     <div class="card stat-card"><div class="skeleton-row" style="display:block;"><span style="display:block;height:12px;width:45%;"></span><span style="display:block;height:28px;width:70%;margin-top:10px;"></span></div></div>
   `).join("");
 
-  let data;
+  let data, reminders;
   try {
-    data = await api("/api/dashboard");
+    const [dashRes, remRes] = await Promise.allSettled([api("/api/dashboard"), api("/api/reminders")]);
+    if (dashRes.status !== "fulfilled") throw dashRes.reason;
+    data = dashRes.value;
+    reminders = remRes.status === "fulfilled" ? remRes.value : { overdue: [], upcoming: [] };
   } catch (err) {
     toast(err.message, "error");
     return;
@@ -2334,7 +2416,7 @@ async function loadDashboard() {
         <div style="flex:1;min-width:160px;">
           ${catData.map((c) => `
             <div style="display:flex;justify-content:space-between;align-items:center;font-size:12.5px;padding:4px 0;">
-              <span style="display:flex;align-items:center;gap:6px;"><span class="chart-legend" style="margin:0;"></span><span style="width:9px;height:9px;border-radius:2px;background:${c.color};display:inline-block;"></span>${escapeHtml(c.label)}</span>
+              <span style="display:flex;align-items:center;gap:6px;"><span style="width:9px;height:9px;border-radius:2px;background:${c.color};display:inline-block;"></span>${escapeHtml(c.label)}</span>
               <span class="num">${fmtMoney(c.value, { plain: true })}</span>
             </div>
           `).join("")}
@@ -2367,6 +2449,59 @@ async function loadDashboard() {
       <div class="progress-track"><div class="progress-fill" style="width:${Math.min(100, g.progress_pct)}%;"></div></div>
     </div>
   `).join("") : `<div class="empty-state" style="padding:20px;"><div class="ic">◎</div><div class="t">No goals yet</div><button class="btn small" onclick="showTab('goals')">Create one →</button></div>`;
+
+  // Financial Health
+  const fh = data.financial_health || { score: 100, status: "strong", recommendations: [] };
+  const statusMap = { strong: ["success", "Strong"], watch: ["warning", "Watch"], needs_attention: ["danger", "Needs Attention"] };
+  const [statusCls, statusLabel] = statusMap[fh.status] || ["info", fh.status || "Steady"];
+  const sevMap = { high: "danger", medium: "warning", info: "info", success: "success" };
+  $("dashboardHealth").innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;">
+      <div>
+        <div class="label" style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);">Health Score</div>
+        <div class="num" style="font-size:28px;font-weight:700;">${fh.score}<span class="muted" style="font-size:14px;">/100</span></div>
+      </div>
+      <span class="pill ${statusCls}">${escapeHtml(statusLabel)}</span>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:8px;">
+      ${(fh.recommendations || []).map((rec) => `
+        <div style="padding:10px 12px;border:1px solid var(--line);border-radius:var(--radius-sm);background:var(--paper);">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:3px;">
+            <strong style="font-size:13px;">${escapeHtml(rec.title)}</strong>
+            <span class="pill ${sevMap[rec.severity] || ""}" style="font-size:10.5px;">${escapeHtml(rec.severity || "info")}</span>
+          </div>
+          <div class="field-hint" style="margin-top:0;">${escapeHtml(rec.detail || "")}</div>
+        </div>
+      `).join("")}
+    </div>
+  `;
+
+  // Bill Reminders
+  const overdue = reminders.overdue || [];
+  const upcoming = reminders.upcoming || [];
+  if (!overdue.length && !upcoming.length) {
+    $("dashboardReminders").innerHTML = `<div class="empty-state" style="padding:20px;"><div class="ic">✓</div><div class="t">All caught up</div><div class="b">No overdue bills or due dates in the next 14 days.</div></div>`;
+  } else {
+    const renderRemRow = (b, isOverdue) => `
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--line-soft);">
+        <div style="min-width:0;">
+          <div style="font-size:13px;font-weight:600;">${escapeHtml(b.payee_name)} <span class="muted num" style="font-size:11.5px;">${escapeHtml(b.bill_number)}</span></div>
+          <div class="field-hint" style="margin-top:2px;">
+            <span class="pill ${isOverdue ? 'danger' : 'warning'}" style="font-size:10.5px;">${isOverdue ? `${b.days_overdue}d overdue` : (b.days_left === 0 ? "Due today" : `Due in ${b.days_left}d`)}</span>
+            · ${fmtDate(b.due_date)}
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+          <span class="num" style="font-weight:600;">${fmtMoney(b.balance_amount, { plain: true })}</span>
+          <button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="openPayBillModal(${b.id})">Pay</button>
+        </div>
+      </div>
+    `;
+    $("dashboardReminders").innerHTML =
+      overdue.slice(0, 4).map((b) => renderRemRow(b, true)).join("") +
+      upcoming.slice(0, 4).map((b) => renderRemRow(b, false)).join("");
+    applyRoleGates();
+  }
 
   // Recent tables
   $("dashboardRecentExpenses").innerHTML = simpleMiniTable(data.recent_expenses, [
@@ -2411,17 +2546,36 @@ function simpleMiniTable(rows, cols) {
 
 const expensesState = { limit: 25, offset: 0 };
 
+function syncFxSettled(prefix) {
+  const origAmt = parseFloat($(`${prefix}OrigAmount`)?.value);
+  const rate = parseFloat($(`${prefix}ExchangeRate`)?.value);
+  const target = $(prefix === "exp" ? "expAmount" : "incAmount");
+  if (target && origAmt > 0 && rate > 0) {
+    target.value = (origAmt * rate).toFixed(2);
+  }
+}
+
+function fxBadgeHint(item) {
+  if (!item.original_currency) return "";
+  const origAmt = item.original_amount !== undefined
+    ? Number(item.original_amount)
+    : Number(item.original_amount_cents || 0) / 100;
+  return `<div class="field-hint">${escapeHtml(item.original_currency)} ${origAmt.toFixed(2)} @ ${item.exchange_rate}</div>`;
+}
+
 async function loadExpenses(offset) {
   setLoading($("expensesTable"), 6);
   if (typeof offset === "number") expensesState.offset = offset;
   fillCategoryFilterSelect($("expensesCategoryFilter"), "expense");
   fillMemberFilterSelect($("expensesMemberFilter"));
+  fillAccountFilterSelect($("expensesAccountFilter"));
 
   const params = new URLSearchParams({
     limit: expensesState.limit, offset: expensesState.offset,
     q: $("expensesSearch").value.trim(),
     category: $("expensesCategoryFilter").value,
     member: $("expensesMemberFilter").value,
+    account_id: $("expensesAccountFilter").value,
     from: $("expensesFrom").value,
     to: $("expensesTo").value,
   });
@@ -2432,7 +2586,7 @@ async function loadExpenses(offset) {
     data = await api(`/api/expenses?${params.toString()}`);
   } catch (err) { toast(err.message, "error"); return; }
 
-  $("expensesSub").textContent = `${data.total} expense${data.total === 1 ? "" : "s"} tracked`;
+  $("expensesSub").textContent = `${data.total} expense${data.total === 1 ? "" : "s"} tracked · Total ${fmtMoney(data.filtered_total ?? 0, { plain: true })}`;
 
   $("expensesTable").innerHTML = data.items.length ? `
     <table>
@@ -2447,7 +2601,7 @@ async function loadExpenses(offset) {
             <td>${fmtDate(item.expense_date)}</td>
             <td>${item.member ? `<span class="avatar-tag"><span class="dot"></span>${escapeHtml(item.member)}</span>` : "—"}</td>
             <td>${escapeHtml(item.store || "—")}</td>
-            <td class="right">${fmtMoney(item.amount, { neutral: true })}</td>
+            <td class="right">${fmtMoney(item.amount, { neutral: true })}${fxBadgeHint(item)}</td>
             <td>
               <div class="row-actions">
                 <button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="openExpenseModal(${item.id})">Edit</button>
@@ -2484,6 +2638,9 @@ function expenseFormHtml(item) {
   item = item || {};
   expSplitSeq = 0;
   const splits = item.splits || [];
+  const origAmt = item.original_amount !== undefined
+    ? item.original_amount
+    : (item.original_amount_cents ? (item.original_amount_cents / 100).toFixed(2) : "");
   return `
     <form id="expenseForm" onsubmit="saveExpense(event, ${item.id || "null"})">
       <div class="form-grid">
@@ -2498,6 +2655,16 @@ function expenseFormHtml(item) {
         <div class="field full"><label>Tags (comma-separated)</label><input id="expTags" value="${escapeHtml(item.tags || "")}" /></div>
         <div class="field full"><label>Notes</label><textarea id="expNotes">${escapeHtml(item.notes || "")}</textarea></div>
       </div>
+
+      <fieldset style="margin-top:16px;">
+        <legend>Multi-Currency FX (Optional)</legend>
+        <div class="grid cols-3" style="gap:10px;">
+          <div class="field" style="margin-top:0;"><label>Original Currency</label><input id="expOrigCurrency" maxlength="3" placeholder="e.g. EUR" style="text-transform:uppercase;" value="${escapeHtml(item.original_currency || "")}" /></div>
+          <div class="field" style="margin-top:0;"><label>Original Amount</label><input id="expOrigAmount" type="number" step="0.01" min="0" value="${origAmt}" oninput="syncFxSettled('exp')" /></div>
+          <div class="field" style="margin-top:0;"><label>Exchange Rate</label><input id="expExchangeRate" type="number" step="0.0001" min="0" value="${item.exchange_rate ? item.exchange_rate : ""}" oninput="syncFxSettled('exp')" /></div>
+        </div>
+        <div class="field-hint">Enter currency + rate to track original amount and auto-calculate settled primary amount.</div>
+      </fieldset>
 
       <fieldset style="margin-top:16px;">
         <legend>Category / Member Splits (Optional)</legend>
@@ -2529,33 +2696,43 @@ function openExpenseModal(id) {
 
 async function saveExpense(event, id) {
   event.preventDefault();
-  const splits = qsa("#expSplitsWrap .exp-split-row").map((row) => ({
-    category: qs(".es-category", row).value,
-    amount: qs(".es-amount", row).value,
-    member: qs(".es-member", row).value,
-    notes: qs(".es-notes", row).value,
-  })).filter((s) => s.amount);
-
-  const memberVal = $("expMember").value;
-  const payload = {
-    title: $("expTitle").value,
-    amount: $("expAmount").value,
-    category: $("expCategory").value,
-    expense_date: $("expDate").value,
-    store: $("expStore").value,
-    member_id: memberVal === "all" ? null : (memberVal || null),
-    account_id: $("expAccount").value || null,
-    receipt_ref: $("expReceipt").value,
-    tags: $("expTags").value,
-    notes: $("expNotes").value,
-  };
-  if (memberVal === "all") {
-    payload.splits = evenSplitAcrossMembers(payload.amount);
-  } else if (splits.length > 0) {
-    payload.splits = splits;
-  }
-
   try {
+    const splits = qsa("#expSplitsWrap .exp-split-row").map((row) => ({
+      category: qs(".es-category", row).value,
+      amount: qs(".es-amount", row).value,
+      member: qs(".es-member", row).value,
+      notes: qs(".es-notes", row).value,
+    })).filter((s) => s.amount);
+
+    const memberVal = $("expMember").value;
+    const origCurr = $("expOrigCurrency").value.trim().toUpperCase();
+    const payload = {
+      title: $("expTitle").value,
+      amount: $("expAmount").value,
+      category: $("expCategory").value,
+      expense_date: $("expDate").value,
+      store: $("expStore").value,
+      member_id: memberVal === "all" ? null : (memberVal || null),
+      account_id: $("expAccount").value || null,
+      receipt_ref: $("expReceipt").value,
+      tags: $("expTags").value,
+      notes: $("expNotes").value,
+      original_currency: origCurr,
+    };
+    if (origCurr) {
+      payload.exchange_rate = $("expExchangeRate").value || 0;
+      if ($("expOrigAmount").value) payload.original_amount = $("expOrigAmount").value;
+    } else {
+      payload.exchange_rate = 0;
+      payload.original_amount = 0;
+    }
+
+    if (memberVal === "all") {
+      payload.splits = evenSplitAcrossMembers(payload.amount);
+    } else if (splits.length > 0 || id) {
+      payload.splits = splits;
+    }
+
     if (id) await api(`/api/expenses/${id}`, "PUT", payload);
     else await api("/api/expenses", "POST", payload);
     closeModal();
@@ -2585,12 +2762,14 @@ async function loadIncome(offset) {
   if (typeof offset === "number") incomeState.offset = offset;
   fillCategoryFilterSelect($("incomeCategoryFilter"), "income");
   fillMemberFilterSelect($("incomeMemberFilter"));
+  fillAccountFilterSelect($("incomeAccountFilter"));
 
   const params = new URLSearchParams({
     limit: incomeState.limit, offset: incomeState.offset,
     q: $("incomeSearch").value.trim(),
     category: $("incomeCategoryFilter").value,
     member: $("incomeMemberFilter").value,
+    account_id: $("incomeAccountFilter").value,
     from: $("incomeFrom").value,
     to: $("incomeTo").value,
   });
@@ -2600,6 +2779,8 @@ async function loadIncome(offset) {
   try {
     data = await api(`/api/income?${params.toString()}`);
   } catch (err) { toast(err.message, "error"); return; }
+
+  $("incomeSub").textContent = `${data.total} income entr${data.total === 1 ? "y" : "ies"} · Total ${fmtMoney(data.filtered_total ?? 0, { plain: true })}`;
 
   $("incomeTable").innerHTML = data.items.length ? `
     <table>
@@ -2614,7 +2795,7 @@ async function loadIncome(offset) {
             <td>${fmtDate(item.income_date)}</td>
             <td>${item.member ? `<span class="avatar-tag"><span class="dot"></span>${escapeHtml(item.member)}</span>` : "—"}</td>
             <td>${escapeHtml(item.source || "—")}</td>
-            <td class="right">${fmtMoney(item.amount)}</td>
+            <td class="right">${fmtMoney(item.amount)}${fxBadgeHint(item)}</td>
             <td>
               <div class="row-actions">
                 <button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="openIncomeModal(${item.id})">Edit</button>
@@ -2631,19 +2812,59 @@ async function loadIncome(offset) {
   renderPagination($("incomePagination"), data.total, data.limit, data.offset, loadIncome);
 }
 
+let incSplitSeq = 0;
+
+function incomeSplitRowHtml(s) {
+  s = s || {};
+  const idx = incSplitSeq++;
+  return `
+    <div class="item-row inc-split-row" data-idx="${idx}">
+      <select class="is-category">${categoryOptions("income", s.category)}</select>
+      <input placeholder="Amount" type="number" step="0.01" min="0.01" class="is-amount" value="${s.amount ?? ""}" />
+      <select class="is-member">${memberOptions(s.member, { includeAll: false })}</select>
+      <input placeholder="Notes" class="is-notes" value="${escapeHtml(s.notes || "")}" />
+      <button type="button" class="btn ghost icon-only small" onclick="this.closest('.inc-split-row').remove()" title="Remove split">✕</button>
+    </div>
+  `;
+}
+
 function incomeFormHtml(item) {
   item = item || {};
+  incSplitSeq = 0;
+  const splits = item.splits || [];
+  const origAmt = item.original_amount !== undefined
+    ? item.original_amount
+    : (item.original_amount_cents ? (item.original_amount_cents / 100).toFixed(2) : "");
   return `
-    <form id="incomeForm" class="form-grid" onsubmit="saveIncome(event, ${item.id || "null"})">
-      <div class="field"><label>Title *</label><input id="incTitle" required value="${escapeHtml(item.title || "")}" /></div>
-      <div class="field"><label>Amount *</label><input id="incAmount" type="number" step="0.01" min="0.01" required value="${item.amount ?? ""}" /></div>
-      <div class="field"><label>Category *</label><select id="incCategory">${categoryOptions("income", item.category)}</select></div>
-      <div class="field"><label>Date *</label><input id="incDate" type="date" required value="${item.income_date || todayIso()}" /></div>
-      <div class="field"><label>Source</label><input id="incSource" value="${escapeHtml(item.source || "")}" /></div>
-      <div class="field"><label>Member</label><select id="incMember">${memberOptions(item.member_id ?? "", { useId: true })}</select></div>
-      <div class="field"><label>Account</label><select id="incAccount">${accountOptions(item.account_id)}</select></div>
-      <div class="field"><label>Tags (comma-separated)</label><input id="incTags" value="${escapeHtml(item.tags || "")}" /></div>
-      <div class="field full"><label>Notes</label><textarea id="incNotes">${escapeHtml(item.notes || "")}</textarea></div>
+    <form id="incomeForm" onsubmit="saveIncome(event, ${item.id || "null"})">
+      <div class="form-grid">
+        <div class="field"><label>Title *</label><input id="incTitle" required value="${escapeHtml(item.title || "")}" /></div>
+        <div class="field"><label>Amount *</label><input id="incAmount" type="number" step="0.01" min="0.01" required value="${item.amount ?? ""}" /></div>
+        <div class="field"><label>Category *</label><select id="incCategory">${categoryOptions("income", item.category)}</select></div>
+        <div class="field"><label>Date *</label><input id="incDate" type="date" required value="${item.income_date || todayIso()}" /></div>
+        <div class="field"><label>Source</label><input id="incSource" value="${escapeHtml(item.source || "")}" /></div>
+        <div class="field"><label>Member</label><select id="incMember">${memberOptions(item.member_id ?? "", { useId: true })}</select></div>
+        <div class="field"><label>Account</label><select id="incAccount">${accountOptions(item.account_id)}</select></div>
+        <div class="field"><label>Tags (comma-separated)</label><input id="incTags" value="${escapeHtml(item.tags || "")}" /></div>
+        <div class="field full"><label>Notes</label><textarea id="incNotes">${escapeHtml(item.notes || "")}</textarea></div>
+      </div>
+
+      <fieldset style="margin-top:16px;">
+        <legend>Multi-Currency FX (Optional)</legend>
+        <div class="grid cols-3" style="gap:10px;">
+          <div class="field" style="margin-top:0;"><label>Original Currency</label><input id="incOrigCurrency" maxlength="3" placeholder="e.g. EUR" style="text-transform:uppercase;" value="${escapeHtml(item.original_currency || "")}" /></div>
+          <div class="field" style="margin-top:0;"><label>Original Amount</label><input id="incOrigAmount" type="number" step="0.01" min="0" value="${origAmt}" oninput="syncFxSettled('inc')" /></div>
+          <div class="field" style="margin-top:0;"><label>Exchange Rate</label><input id="incExchangeRate" type="number" step="0.0001" min="0" value="${item.exchange_rate ? item.exchange_rate : ""}" oninput="syncFxSettled('inc')" /></div>
+        </div>
+        <div class="field-hint">Enter currency + rate to track original amount and auto-calculate settled primary amount.</div>
+      </fieldset>
+
+      <fieldset style="margin-top:16px;">
+        <legend>Category / Member Splits (Optional)</legend>
+        <p class="field-hint" style="margin-bottom:8px;">If provided, the sum of split amounts must equal the Total Amount above.</p>
+        <div id="incSplitsWrap">${splits.map((s) => incomeSplitRowHtml(s)).join("")}</div>
+        <button type="button" class="btn secondary small" onclick="qs('#incSplitsWrap').insertAdjacentHTML('beforeend', incomeSplitRowHtml())">+ Add Split</button>
+      </fieldset>
     </form>
   `;
 }
@@ -2668,20 +2889,42 @@ function openIncomeModal(id) {
 
 async function saveIncome(event, id) {
   event.preventDefault();
-  const memberVal = $("incMember").value;
-  const payload = {
-    title: $("incTitle").value,
-    amount: $("incAmount").value,
-    category: $("incCategory").value,
-    income_date: $("incDate").value,
-    source: $("incSource").value,
-    member_id: memberVal === "all" ? null : (memberVal || null),
-    account_id: $("incAccount").value || null,
-    tags: $("incTags").value,
-    notes: $("incNotes").value,
-  };
-  if (memberVal === "all") payload.splits = evenSplitAcrossMembers(payload.amount);
   try {
+    const splits = qsa("#incSplitsWrap .inc-split-row").map((row) => ({
+      category: qs(".is-category", row).value,
+      amount: qs(".is-amount", row).value,
+      member: qs(".is-member", row).value,
+      notes: qs(".is-notes", row).value,
+    })).filter((s) => s.amount);
+
+    const memberVal = $("incMember").value;
+    const origCurr = $("incOrigCurrency").value.trim().toUpperCase();
+    const payload = {
+      title: $("incTitle").value,
+      amount: $("incAmount").value,
+      category: $("incCategory").value,
+      income_date: $("incDate").value,
+      source: $("incSource").value,
+      member_id: memberVal === "all" ? null : (memberVal || null),
+      account_id: $("incAccount").value || null,
+      tags: $("incTags").value,
+      notes: $("incNotes").value,
+      original_currency: origCurr,
+    };
+    if (origCurr) {
+      payload.exchange_rate = $("incExchangeRate").value || 0;
+      if ($("incOrigAmount").value) payload.original_amount = $("incOrigAmount").value;
+    } else {
+      payload.exchange_rate = 0;
+      payload.original_amount = 0;
+    }
+
+    if (memberVal === "all") {
+      payload.splits = evenSplitAcrossMembers(payload.amount);
+    } else if (splits.length > 0 || id) {
+      payload.splits = splits;
+    }
+
     if (id) await api(`/api/income/${id}`, "PUT", payload);
     else await api("/api/income", "POST", payload);
     closeModal();
@@ -2730,6 +2973,7 @@ async function loadBills(offset) {
   setLoading($("billsTable"), 6);
   if (typeof offset === "number") billsState.offset = offset;
   fillCategoryFilterSelect($("billsCategoryFilter"), "bill");
+  fillAccountFilterSelect($("billsAccountFilter"));
 
   const statusVal = $("billsStatusFilter").value;
   const params = new URLSearchParams({
@@ -2737,6 +2981,7 @@ async function loadBills(offset) {
     q: $("billsSearch").value.trim(),
     status: statusVal,
     category: $("billsCategoryFilter").value,
+    account_id: $("billsAccountFilter").value,
     from: $("billsFrom").value,
     to: $("billsTo").value,
   });
@@ -2746,6 +2991,8 @@ async function loadBills(offset) {
   try {
     data = await api(`/api/bills?${params.toString()}`);
   } catch (err) { toast(err.message, "error"); return; }
+
+  $("billsSub").textContent = `${data.total} bill${data.total === 1 ? "" : "s"} · Total ${fmtMoney(data.filtered_total ?? 0, { plain: true })} · Balance ${fmtMoney(data.filtered_balance ?? 0, { plain: true })}`;
 
   $("billsTable").innerHTML = data.items.length ? `
     <table>
@@ -2848,6 +3095,9 @@ function onBillPayeeSelectChange() {
     $("billPayeeName").value = payee.name;
     $("billPayeeEmail").value = payee.email || "";
     $("billPayeeAddress").value = payee.address || "";
+    if (payee.category && $("billCategory") && [...$("billCategory").options].some((o) => o.value === payee.category)) {
+      $("billCategory").value = payee.category;
+    }
   }
 }
 
@@ -3031,7 +3281,7 @@ async function openBillPaymentsModal(billId) {
   const renderRows = (payments) => payments.length ? payments.map((p) => `
     <tr>
       <td>${fmtDate(p.payment_date)}</td>
-      <td class="right num">${fmtMoney(p.amount, { neutral: true })}</td>
+      <td class="right num">${fmtMoney(p.amount ?? (p.amount_cents !== undefined ? p.amount_cents / 100 : 0), { neutral: true })}</td>
       <td>${escapeHtml(p.account_name || "—")}</td>
       <td class="wrap">${escapeHtml(p.notes || "")}</td>
       <td>
@@ -3056,15 +3306,17 @@ async function openBillPaymentsModal(billId) {
     </div>
   `;
 
+  const canRecord = bill.status !== "Paid" && bill.status !== "Void";
   openModal({
     title: `Payments — ${bill.bill_number} (${bill.payee_name})`,
     wide: true,
     bodyHtml,
     footHtml: `
       <button class="btn secondary" onclick="closeModal()">Close</button>
-      <button class="btn" onclick="openPayBillModal(${bill.id})">+ Record Payment</button>
+      ${canRecord ? `<button class="btn role-gate" data-role="Admin,Editor" onclick="openPayBillModal(${bill.id})">+ Record Payment</button>` : ""}
     `,
   });
+  applyRoleGates();
 }
 
 async function deleteBillPayment(billId, paymentId) {
@@ -3396,7 +3648,8 @@ function recurringPayloadFields(entityType, p) {
     <div class="field"><label>Item Name *</label><input id="rpItemName" required value="${escapeHtml(item.item_name || "Recurring charge")}" /></div>
     <div class="field"><label>Amount *</label><input id="rpAmount" type="number" step="0.01" min="0.01" required value="${item.unit_price ?? ""}" /></div>
     <div class="field"><label>Tax Rate %</label><input id="rpTaxRate" type="number" step="0.01" min="0" value="${p.tax_rate ?? 0}" /></div>
-    <div class="field"><label>Account</label><select id="rpAccount">${accountOptions(p.account_id)}</select></div>
+    <div class="field"><label>Due Days After Bill Date</label><input id="rpDueOffset" type="number" min="0" step="1" value="${p.due_days_offset ?? 14}" /></div>
+    <div class="field full"><label>Account</label><select id="rpAccount">${accountOptions(p.account_id)}</select></div>
   `;
 }
 
@@ -3407,10 +3660,17 @@ function refreshRecurringPayloadFields(payload) {
 
 function recurringFormHtml(rule) {
   rule = rule || {};
+  const active = rule.is_active === undefined ? 1 : Number(rule.is_active);
   return `
     <form id="recurringForm" onsubmit="saveRecurring(event, ${rule.id || "null"})">
       <div class="form-grid">
-        <div class="field full"><label>Rule Name *</label><input id="recName" required value="${escapeHtml(rule.name || "")}" /></div>
+        <div class="field"><label>Rule Name *</label><input id="recName" required value="${escapeHtml(rule.name || "")}" /></div>
+        <div class="field"><label>Status *</label>
+          <select id="recIsActive">
+            <option value="1" ${active ? "selected" : ""}>Active</option>
+            <option value="0" ${!active ? "selected" : ""}>Paused</option>
+          </select>
+        </div>
         <div class="field"><label>Applies To *</label>
           <select id="recEntityType" onchange="refreshRecurringPayloadFields()">
             <option value="expense" ${rule.entity_type === "expense" ? "selected" : ""}>Expense</option>
@@ -3469,7 +3729,7 @@ function collectRecurringPayload(entityType) {
   }
   return {
     payee_name: $("rpPayeeName").value, bill_category: $("rpCategory").value,
-    tax_rate: $("rpTaxRate").value || 0, account_id: $("rpAccount").value || null,
+    tax_rate: $("rpTaxRate").value || 0, due_days_offset: $("rpDueOffset").value || 0, account_id: $("rpAccount").value || null,
     items: [{ item_name: $("rpItemName").value, quantity: 1, unit_price: $("rpAmount").value }],
   };
 }
@@ -3483,6 +3743,7 @@ async function saveRecurring(event, id) {
     frequency: $("recFrequency").value,
     interval_value: $("recInterval").value,
     next_run_date: $("recNextRun").value,
+    is_active: $("recIsActive").value === "1",
     payload: collectRecurringPayload(entityType),
   };
   try {
@@ -3506,7 +3767,19 @@ function confirmDeleteRecurring(id) {
 async function runRecurringNow() {
   try {
     const result = await api("/api/recurring/run", "POST", {});
-    toast(result.created.length ? `Created ${result.created.length} item(s)` : "No rules were due", "success");
+    const createdN = (result.created || []).length;
+    const failed = result.failed || [];
+    if (failed.length) {
+      const firstErr = `${failed[0].rule}: ${failed[0].error}`;
+      toast(
+        createdN
+          ? `Created ${createdN} item(s); ${failed.length} failed (${firstErr})`
+          : `${failed.length} rule(s) failed (${firstErr})`,
+        createdN ? "info" : "error"
+      );
+    } else {
+      toast(createdN ? `Created ${createdN} item(s)` : "No rules were due", "success");
+    }
     loadRecurring();
     if (currentTab === "dashboard") loadDashboard();
   } catch (err) {
@@ -3789,52 +4062,91 @@ async function loadAccounts() {
     items = await api("/api/accounts");
   } catch (err) { toast(err.message, "error"); return; }
   state.caches.accounts = items;
+  fillAccountFilterSelect($("expensesAccountFilter"));
+  fillAccountFilterSelect($("incomeAccountFilter"));
+  fillAccountFilterSelect($("billsAccountFilter"));
 
   if (!items.length) {
     $("accountsList").innerHTML = `<div class="empty-state"><div class="ic">▣</div><div class="t">No accounts yet</div><button class="btn small" onclick="openAccountModal()">Add your first account →</button></div>`;
-    return;
+  } else {
+    const netWorth = items.reduce((s, a) => s + a.net_worth, 0);
+
+    $("accountsList").innerHTML = `
+      <div class="card stat-card" style="max-width:280px;margin-bottom:16px;">
+        <div class="label">Net Worth</div>
+        <div class="value ${netWorth >= 0 ? 'amt-pos' : 'amt-neg'}">${fmtMoney(netWorth, { plain: true })}</div>
+      </div>
+      <div class="grid cols-3">
+        ${items.map((a) => {
+          const isDebt = a.account_type === "Credit Card" || a.account_type === "Loan";
+          const minPay = Number(a.minimum_payment_cents || 0) / 100;
+          const apr = Number(a.interest_rate || 0);
+          const debtHint = (isDebt || apr > 0 || minPay > 0)
+            ? `<div class="field-hint" style="margin-top:6px;">${apr > 0 ? `${apr}% APR` : "0% APR"}${minPay > 0 ? ` · Min ${fmtMoney(minPay, { plain: true })}/mo` : ""}</div>`
+            : "";
+          return `
+          <div class="card card-pad">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+              <div><strong>${escapeHtml(a.name)}</strong><div class="field-hint" style="text-transform:capitalize;">${escapeHtml(a.account_type)}</div></div>
+              <div class="row-actions">
+                <button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="openAccountModal(${a.id})">Edit</button>
+                <button class="btn ghost small role-gate" data-role="Admin" onclick="confirmDeleteAccount(${a.id})">Delete</button>
+              </div>
+            </div>
+            <div class="value num" style="font-size:20px;margin-top:14px;">${fmtMoney(a.balance, { neutral: true })}</div>
+            ${debtHint}
+            ${a.notes ? `<div class="field-hint" style="margin-top:6px;">${escapeHtml(a.notes)}</div>` : ""}
+          </div>
+        `;
+        }).join("")}
+      </div>
+    `;
   }
 
-  const netWorth = items.reduce((s, a) => s + a.net_worth, 0);
-
-  $("accountsList").innerHTML = `
-    <div class="card stat-card" style="max-width:280px;margin-bottom:16px;">
-      <div class="label">Net Worth</div>
-      <div class="value ${netWorth >= 0 ? 'amt-pos' : 'amt-neg'}">${fmtMoney(netWorth, { plain: true })}</div>
-    </div>
-    <div class="grid cols-3">
-      ${items.map((a) => `
-        <div class="card card-pad">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;">
-            <div><strong>${escapeHtml(a.name)}</strong><div class="field-hint" style="text-transform:capitalize;">${escapeHtml(a.account_type)}</div></div>
-            <div class="row-actions">
-              <button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="openAccountModal(${a.id})">Edit</button>
-              <button class="btn ghost small role-gate" data-role="Admin" onclick="confirmDeleteAccount(${a.id})">Delete</button>
-            </div>
-          </div>
-          <div class="value num" style="font-size:20px;margin-top:14px;">${fmtMoney(a.balance, { neutral: true })}</div>
-          ${a.notes ? `<div class="field-hint" style="margin-top:6px;">${escapeHtml(a.notes)}</div>` : ""}
-        </div>
-      `).join("")}
-    </div>
-  `;
-
   applyRoleGates();
+  loadTransfers(0);
+}
+
+function toggleAccountDebtFields() {
+  const t = $("accType") ? $("accType").value : "Checking";
+  const isDebt = t === "Credit Card" || t === "Loan";
+  const wrap = $("accDebtFields");
+  if (wrap) wrap.classList.toggle("hidden", !isDebt);
+  const lbl = $("accOpeningLabel");
+  if (lbl) lbl.textContent = isDebt ? "Current Balance Owed *" : "Opening Balance *";
+  const hint = $("accOpeningHint");
+  if (hint) {
+    hint.textContent = isDebt
+      ? "Enter amount owed as a positive number (e.g. 600.00); transfers to this account reduce the balance."
+      : "Starting balance for this account (0 or positive amount).";
+  }
 }
 
 function accountFormHtml(item) {
   item = item || {};
+  const accType = item.account_type || "Checking";
+  const isDebt = accType === "Credit Card" || accType === "Loan";
+  const minPay = item.minimum_payment_cents !== undefined
+    ? (item.minimum_payment_cents / 100).toFixed(2)
+    : (item.minimum_payment ?? 0);
+  const openBal = item.opening_balance_cents !== undefined
+    ? (item.opening_balance_cents / 100).toFixed(2)
+    : (item.opening_balance ?? 0);
   return `
     <form id="accountForm" class="form-grid" onsubmit="saveAccount(event, ${item.id || "null"})">
       <div class="field"><label>Account Name *</label><input id="accName" required value="${escapeHtml(item.name || "")}" /></div>
       <div class="field"><label>Type *</label>
-        <select id="accType">
-          ${["Checking", "Savings", "Cash", "Investment", "Credit Card", "Loan", "Other"].map((t) => `<option value="${t}" ${(item.account_type || "Checking") === t ? "selected" : ""}>${t}</option>`).join("")}
+        <select id="accType" onchange="toggleAccountDebtFields()">
+          ${["Checking", "Savings", "Cash", "Investment", "Credit Card", "Loan", "Other"].map((t) => `<option value="${t}" ${accType === t ? "selected" : ""}>${t}</option>`).join("")}
         </select>
       </div>
       ${item.id
-        ? `<div class="field full"><label>Opening Balance (fixed at creation)</label><input type="text" disabled value="${item.opening_balance ?? 0}" /><div class="field-hint">The opening balance can't be edited after creation — balances move through transactions instead.</div></div>`
-        : `<div class="field full"><label>Opening Balance *</label><input id="accOpening" type="number" step="0.01" required value="0" /></div>`}
+        ? `<div class="field full"><label>${isDebt ? "Opening Balance Owed (fixed at creation)" : "Opening Balance (fixed at creation)"}</label><input type="text" disabled value="${openBal}" /><div class="field-hint">The opening balance can't be edited after creation — balances move through transactions instead.</div></div>`
+        : `<div class="field full"><label id="accOpeningLabel">${isDebt ? "Current Balance Owed *" : "Opening Balance *"}</label><input id="accOpening" type="number" step="0.01" min="0" required value="0" /><div id="accOpeningHint" class="field-hint">${isDebt ? "Enter amount owed as a positive number (e.g. 600.00); transfers to this account reduce the balance." : "Starting balance for this account (0 or positive amount)."}</div></div>`}
+      <div id="accDebtFields" class="full form-grid ${isDebt ? "" : "hidden"}" style="gap:14px;">
+        <div class="field"><label>Interest Rate (APR %)</label><input id="accInterestRate" type="number" step="0.01" min="0" max="100" value="${item.interest_rate ?? 0}" /></div>
+        <div class="field"><label>Minimum Monthly Payment</label><input id="accMinPayment" type="number" step="0.01" min="0" value="${minPay}" /></div>
+      </div>
       <div class="field full"><label>Notes</label><textarea id="accNotes">${escapeHtml(item.notes || "")}</textarea></div>
     </form>
   `;
@@ -3858,7 +4170,15 @@ function openAccountModal(id) {
 
 async function saveAccount(event, id) {
   event.preventDefault();
-  const payload = { name: $("accName").value, account_type: $("accType").value, notes: $("accNotes").value };
+  const accType = $("accType").value;
+  const isDebt = accType === "Credit Card" || accType === "Loan";
+  const payload = {
+    name: $("accName").value,
+    account_type: accType,
+    notes: $("accNotes").value,
+    interest_rate: isDebt ? ($("accInterestRate").value || 0) : 0,
+    minimum_payment: isDebt ? ($("accMinPayment").value || 0) : 0,
+  };
   if (!id) payload.opening_balance = $("accOpening").value || 0;
   try {
     if (id) await api(`/api/accounts/${id}`, "PUT", payload);
@@ -3875,6 +4195,108 @@ async function saveAccount(event, id) {
 function confirmDeleteAccount(id) {
   confirmModal("Delete this account? Transactions linked to it will keep their history but lose the account reference.", async () => {
     await apiAction(() => api(`/api/accounts/${id}`, "DELETE"), "Account deleted");
+    await loadAccountsCache();
+    loadAccounts();
+  });
+}
+
+/* =========================================================================
+   TRANSFERS
+   ========================================================================= */
+
+const transfersState = { limit: 15, offset: 0 };
+
+async function loadTransfers(offset) {
+  const el = $("transfersTable");
+  if (!el) return;
+  if (typeof offset === "number") transfersState.offset = offset;
+  let data;
+  try {
+    data = await api(`/api/transfers?limit=${transfersState.limit}&offset=${transfersState.offset}`);
+  } catch (err) {
+    el.innerHTML = `<div class="empty-state" style="padding:20px;">Couldn't load transfers.</div>`;
+    return;
+  }
+
+  if ($("transfersSub")) {
+    $("transfersSub").textContent = `${data.total} transfer${data.total === 1 ? "" : "s"} · Total moved ${fmtMoney(data.filtered_total ?? 0, { plain: true })}`;
+  }
+
+  el.innerHTML = data.items.length ? `
+    <table>
+      <thead><tr>
+        <th scope="col">Date</th><th scope="col">From</th><th scope="col">To</th><th scope="col" class="wrap">Notes</th><th scope="col" class="right">Amount</th><th scope="col"></th>
+      </tr></thead>
+      <tbody>
+        ${data.items.map((t) => `
+          <tr>
+            <td>${fmtDate(t.transfer_date)}</td>
+            <td>${escapeHtml(t.from_account_name)}</td>
+            <td>${escapeHtml(t.to_account_name)}</td>
+            <td class="wrap">${escapeHtml(t.notes || "—")}</td>
+            <td class="right">${fmtMoney(t.amount, { neutral: true })}</td>
+            <td>
+              <div class="row-actions">
+                <button class="btn ghost small role-gate" data-role="Admin,Editor" onclick="confirmDeleteTransfer(${t.id})">Reverse</button>
+              </div>
+            </td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  ` : `<div class="empty-state" style="padding:22px;"><div class="ic">⇄</div><div class="t">No transfers recorded yet</div></div>`;
+
+  applyRoleGates();
+  renderPagination($("transfersPagination"), data.total, data.limit, data.offset, loadTransfers);
+}
+
+function openTransferModal() {
+  if ((state.caches.accounts || []).length < 2) {
+    toast("Add at least two active accounts before recording a transfer", "info");
+    return;
+  }
+  const firstId = state.caches.accounts[0]?.id;
+  const secondId = state.caches.accounts[1]?.id;
+  openModal({
+    title: "Transfer Between Accounts",
+    bodyHtml: `
+      <form id="transferForm" class="form-grid" onsubmit="saveTransfer(event)">
+        <div class="field"><label>From Account *</label><select id="trFromAccount" required>${accountOptions(firstId, { includeNone: false })}</select></div>
+        <div class="field"><label>To Account *</label><select id="trToAccount" required>${accountOptions(secondId, { includeNone: false })}</select></div>
+        <div class="field"><label>Amount *</label><input id="trAmount" type="number" step="0.01" min="0.01" required /></div>
+        <div class="field"><label>Date *</label><input id="trDate" type="date" required value="${todayIso()}" /></div>
+        <div class="field full"><label>Notes</label><textarea id="trNotes" placeholder="e.g. Monthly savings transfer or credit card payment"></textarea></div>
+      </form>
+    `,
+    footHtml: `<button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn" onclick="document.getElementById('transferForm').requestSubmit()">Record Transfer</button>`,
+  });
+}
+
+async function saveTransfer(event) {
+  event.preventDefault();
+  try {
+    const fromId = $("trFromAccount").value;
+    const toId = $("trToAccount").value;
+    if (fromId === toId) throw new Error("Source and destination accounts must be different");
+    await api("/api/transfers", "POST", {
+      from_account_id: fromId,
+      to_account_id: toId,
+      amount: $("trAmount").value,
+      transfer_date: $("trDate").value,
+      notes: $("trNotes").value,
+    });
+    closeModal();
+    toast("Transfer recorded", "success");
+    await loadAccountsCache();
+    loadAccounts();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+function confirmDeleteTransfer(id) {
+  confirmModal("Reverse this transfer? Both account balances will revert automatically.", async () => {
+    await apiAction(() => api(`/api/transfers/${id}`, "DELETE"), "Transfer reversed");
     await loadAccountsCache();
     loadAccounts();
   });
@@ -4410,7 +4832,7 @@ async function loadAudit(offset) {
 }
 
 function downloadBackup() {
-  triggerDownload("/api/admin/backup", `familyfinance-backup-${new Date().toISOString().slice(0, 10)}.db`);
+  triggerDownload("/api/admin/backup", `familyfinance-backup-${todayIso()}.db`);
   toast("Backup download started", "info");
 }
 
@@ -4512,6 +4934,8 @@ function revokeToken(id) {
    DEBT PAYOFF, FORECAST, ALLOWANCES, CSV IMPORT, RESTORE
    ========================================================================= */
 
+const debouncedDebtReload = debounce(() => loadDebtPayoff(), 300);
+
 async function loadDebtPayoff() {
   const extra = $("debtExtraPayment").value || 0;
   let data;
@@ -4582,7 +5006,7 @@ async function loadForecast() {
   }));
 
   $("forecastContent").innerHTML = `
-    <div class="grid cols-2" style="margin-bottom:20px;">
+    <div class="grid cols-4" style="margin-bottom:20px;">
       <div class="card stat-card"><div class="label">Current Net Worth</div><div class="value">${fmtMoney(data.current_net_worth, { plain: true })}</div></div>
       <div class="card stat-card"><div class="label">90-Day Avg. Income</div><div class="value amt-pos">${fmtMoney(data.historical_monthly_income, { plain: true })}</div></div>
       <div class="card stat-card"><div class="label">90-Day Avg. Outflow</div><div class="value amt-neg">${fmtMoney(data.historical_monthly_expense, { plain: true })}</div></div>

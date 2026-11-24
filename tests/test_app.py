@@ -1,14 +1,15 @@
+import csv
 import io
 import os
 import sqlite3
 import tempfile
 import threading
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
 
-from app import create_app
+from app import add_months, create_app
 
 
 @pytest.fixture()
@@ -709,6 +710,7 @@ def test_recurring_run_isolates_broken_rules(client):
     and roll back every other rule's created items."""
     token = login(client)
     headers = auth_headers(token)
+    due_date = (date.today() - timedelta(days=2)).isoformat()
 
     for name, payload in (
         ("good", {"title": "Good", "amount": "5.00", "category": "Other"}),
@@ -722,7 +724,7 @@ def test_recurring_run_isolates_broken_rules(client):
                 "entity_type": "expense",
                 "frequency": "monthly",
                 "interval_value": 1,
-                "next_run_date": "2026-08-01",
+                "next_run_date": due_date,
                 "payload": payload,
             },
         )
@@ -745,7 +747,7 @@ def test_recurring_run_isolates_broken_rules(client):
     # The broken rule stays due so the failure keeps being surfaced.
     resp = client.get("/api/recurring", headers=headers)
     rules = {r["name"]: r for r in resp.get_json()}
-    assert rules["bad"]["next_run_date"] <= "2026-08-01"
+    assert rules["bad"]["next_run_date"] <= due_date
 
 
 def test_restore_rejects_invalid_backup_files(client):
@@ -1843,6 +1845,8 @@ def test_forecast_includes_recurring_rules_and_scheduled_bills(client):
     feed forward-looking projections."""
     token = login(client)
     headers = auth_headers(token)
+    next_month_first = add_months(date.today().replace(day=1), 1)
+    next_month_due = next_month_first.replace(day=5).isoformat()
 
     client.post(
         "/api/recurring",
@@ -1852,7 +1856,7 @@ def test_forecast_includes_recurring_rules_and_scheduled_bills(client):
             "entity_type": "income",
             "frequency": "monthly",
             "interval_value": 1,
-            "next_run_date": "2026-09-01",
+            "next_run_date": next_month_first.isoformat(),
             "payload": {"title": "Salary", "amount": "3000.00", "category": "Other"},
         },
     )
@@ -1863,8 +1867,8 @@ def test_forecast_includes_recurring_rules_and_scheduled_bills(client):
         json={
             "payee_name": "Scheduled Landlord",
             "bill_category": "Mortgage / Rent",
-            "bill_date": "2026-09-01",
-            "due_date": "2026-09-05",
+            "bill_date": date.today().isoformat(),
+            "due_date": next_month_due,
             "items": [{"item_name": "Rent", "quantity": 1, "unit_price": "900.00"}],
         },
     )
@@ -1926,3 +1930,397 @@ def test_concurrent_bill_payments_cannot_overpay(app):
     assert bill["paid_cents"] <= bill["total_cents"]
     assert codes.count(200) == 1
     assert codes.count(400) == 7
+
+
+def test_transfers_crud_and_net_worth_invariance(client):
+    token = login(client)
+    headers = auth_headers(token)
+
+    chk = client.post(
+        "/api/accounts",
+        headers=headers,
+        json={"name": "Checking", "account_type": "Checking", "opening_balance": "1000.00"},
+    ).get_json()["id"]
+    sav = client.post(
+        "/api/accounts",
+        headers=headers,
+        json={"name": "Savings", "account_type": "Savings", "opening_balance": "500.00"},
+    ).get_json()["id"]
+    card = client.post(
+        "/api/accounts",
+        headers=headers,
+        json={"name": "Visa", "account_type": "Credit Card", "opening_balance": "400.00"},
+    ).get_json()["id"]
+
+    # Net worth before: 1000 + 500 - 400 = 1100
+    nw_before = client.get("/api/reports/net-worth").get_json()["net_worth"]
+    assert nw_before == 1100.0
+
+    # Asset -> Asset transfer ($250 Checking -> Savings)
+    t1 = client.post(
+        "/api/transfers",
+        headers=headers,
+        json={
+            "from_account_id": chk,
+            "to_account_id": sav,
+            "amount": "250.00",
+            "transfer_date": date.today().isoformat(),
+            "notes": "Emergency fund",
+        },
+    )
+    assert t1.status_code == 200
+    t1_id = t1.get_json()["id"]
+
+    # Asset -> Liability transfer ($150 Checking -> Visa card payoff)
+    t2 = client.post(
+        "/api/transfers",
+        headers=headers,
+        json={
+            "from_account_id": chk,
+            "to_account_id": card,
+            "amount": "150.00",
+            "transfer_date": date.today().isoformat(),
+            "notes": "Card payoff",
+        },
+    )
+    assert t2.status_code == 200
+
+    accounts = {a["id"]: a for a in client.get("/api/accounts").get_json()}
+    assert accounts[chk]["balance"] == 600.0
+    assert accounts[sav]["balance"] == 750.0
+    assert accounts[card]["balance"] == 250.0
+    assert client.get("/api/reports/net-worth").get_json()["net_worth"] == 1100.0
+
+    # Filtering & total
+    sav_transfers = client.get(f"/api/transfers?account_id={sav}").get_json()
+    assert sav_transfers["total"] == 1
+    assert sav_transfers["filtered_total"] == 250.0
+
+    # Validation checks
+    assert client.post(
+        "/api/transfers",
+        headers=headers,
+        json={"from_account_id": chk, "to_account_id": chk, "amount": "10.00"},
+    ).status_code == 400
+    assert client.post(
+        "/api/transfers",
+        headers=headers,
+        json={"from_account_id": chk, "to_account_id": sav, "amount": "0"},
+    ).status_code == 400
+
+    # Reversing transfer restores exact balances
+    assert client.delete(f"/api/transfers/{t1_id}", headers=headers).status_code == 200
+    assert client.delete(f"/api/transfers/{t1_id}", headers=headers).status_code == 404
+    accounts = {a["id"]: a for a in client.get("/api/accounts").get_json()}
+    assert accounts[chk]["balance"] == 850.0
+    assert accounts[sav]["balance"] == 500.0
+    assert client.get("/api/reports/net-worth").get_json()["net_worth"] == 1100.0
+
+
+def test_account_partial_update_preserves_opening_balance(client):
+    token = login(client)
+    headers = auth_headers(token)
+
+    aid = client.post(
+        "/api/accounts",
+        headers=headers,
+        json={
+            "name": "Auto Loan",
+            "account_type": "Loan",
+            "opening_balance": "5000.00",
+            "interest_rate": 6.5,
+            "minimum_payment": "200.00",
+        },
+    ).get_json()["id"]
+
+    # Partial PUT omitting opening_balance must not zero it out
+    resp = client.put(
+        f"/api/accounts/{aid}",
+        headers=headers,
+        json={"name": "Auto Loan Renamed", "account_type": "Loan", "notes": "Refinanced", "interest_rate": 5.25},
+    )
+    assert resp.status_code == 200
+    acc = next(a for a in client.get("/api/accounts").get_json() if a["id"] == aid)
+    assert acc["name"] == "Auto Loan Renamed"
+    assert acc["opening_balance_cents"] == 500000
+    assert acc["balance"] == 5000.0
+    assert acc["interest_rate"] == 5.25
+    assert acc["minimum_payment_cents"] == 20000
+
+
+def test_expense_income_update_fx_member_clear_and_deactivated_refs(client):
+    token = login(client)
+    headers = auth_headers(token)
+
+    m1 = client.post("/api/members", headers=headers, json={"name": "Jordan"}).get_json()["id"]
+    a1 = client.post("/api/accounts", headers=headers, json={"name": "Travel Card", "account_type": "Credit Card"}).get_json()["id"]
+    a2 = client.post("/api/accounts", headers=headers, json={"name": "Old Card", "account_type": "Credit Card"}).get_json()["id"]
+
+    # Deactivate a2
+    assert client.delete(f"/api/accounts/{a2}", headers=headers).status_code == 200
+
+    eid = client.post(
+        "/api/expenses",
+        headers=headers,
+        json={
+            "title": "Paris Cafe",
+            "amount": "22.00",
+            "category": "Dining Out",
+            "expense_date": date.today().isoformat(),
+            "member_id": m1,
+            "account_id": a1,
+            "original_currency": "EUR",
+            "exchange_rate": 1.1,
+            "original_amount": "20.00",
+        },
+    ).get_json()["id"]
+
+    # Update FX decimal string original_amount and clear member_id cleanly
+    resp = client.put(
+        f"/api/expenses/{eid}",
+        headers=headers,
+        json={"original_amount": "25.00", "amount": "27.50", "member_id": None},
+    )
+    assert resp.status_code == 200
+    detail = client.get(f"/api/expenses/{eid}").get_json()
+    assert detail["original_amount_cents"] == 2500
+    assert detail["amount_cents"] == 2750
+    assert detail["member_id"] is None
+    assert detail["member"] == ""
+
+    # Switching to deactivated account must fail
+    assert client.put(
+        f"/api/expenses/{eid}",
+        headers=headers,
+        json={"account_id": a2},
+    ).status_code == 400
+
+    # Historical expense referencing a later-deactivated account remains editable when account_id is unchanged
+    assert client.delete(f"/api/accounts/{a1}", headers=headers).status_code == 200
+    assert client.put(
+        f"/api/expenses/{eid}",
+        headers=headers,
+        json={"notes": "Updated note after card closed"},
+    ).status_code == 200
+
+
+def test_category_member_cascades_and_allowance_matching(client):
+    token = login(client)
+    headers = auth_headers(token)
+
+    m_id = client.post("/api/members", headers=headers, json={"name": "Taylor"}).get_json()["id"]
+    c_id = client.post("/api/categories", headers=headers, json={"name": "Snacks", "type": "expense"}).get_json()["id"]
+    al_id = client.post(
+        "/api/allowances",
+        headers=headers,
+        json={"member_id": m_id, "amount": "100.00", "frequency": "monthly"},
+    ).get_json()["id"]
+    assert al_id > 0
+
+    b_id = client.post(
+        "/api/budgets",
+        headers=headers,
+        json={"category": "Snacks", "period": "monthly", "amount": "80.00", "member": "Taylor"},
+    ).get_json()["id"]
+    assert b_id > 0
+
+    e_id = client.post(
+        "/api/expenses",
+        headers=headers,
+        json={
+            "title": "Pretzels",
+            "category": "Snacks",
+            "amount": "15.00",
+            "expense_date": date.today().isoformat(),
+            "member_id": m_id,
+        },
+    ).get_json()["id"]
+
+    # Rename category & member -> cascades across expenses, budgets, and allowance spend stays matched
+    assert client.put(f"/api/categories/{c_id}", headers=headers, json={"name": "Treats"}).status_code == 200
+    assert client.put(f"/api/members/{m_id}", headers=headers, json={"name": "Taylor Swift-Renamed"}).status_code == 200
+
+    exp = client.get(f"/api/expenses/{e_id}").get_json()
+    assert exp["category"] == "Treats"
+    assert exp["member"] == "Taylor Swift-Renamed"
+
+    budgets = client.get("/api/budgets?period=monthly").get_json()
+    assert any(b["category"] == "Treats" and b["member"] == "Taylor Swift-Renamed" for b in budgets)
+
+    allowances = client.get("/api/allowances").get_json()
+    assert len(allowances) == 1
+    assert allowances[0]["spent_this_month"] == 15.0
+    assert allowances[0]["remaining_this_month"] == 85.0
+
+    # Duplicate rename rejected
+    assert client.put(f"/api/categories/{c_id}", headers=headers, json={"name": "Groceries & Food"}).status_code == 400
+
+
+def test_double_delete_404_and_filtered_totals_and_csv_goal_cap(client):
+    token = login(client)
+    headers = auth_headers(token)
+
+    a1 = client.post("/api/accounts", headers=headers, json={"name": "Main", "account_type": "Checking"}).get_json()["id"]
+    a2 = client.post("/api/accounts", headers=headers, json={"name": "Side", "account_type": "Checking"}).get_json()["id"]
+
+    eid = client.post(
+        "/api/expenses",
+        headers=headers,
+        json={"title": "E1", "amount": "12.50", "category": "Other", "expense_date": date.today().isoformat(), "account_id": a1},
+    ).get_json()["id"]
+    client.post(
+        "/api/expenses",
+        headers=headers,
+        json={"title": "E2", "amount": "7.50", "category": "Other", "expense_date": date.today().isoformat(), "account_id": a2},
+    )
+
+    iid = client.post(
+        "/api/income",
+        headers=headers,
+        json={"title": "I1", "amount": "200.00", "category": "Salary", "income_date": date.today().isoformat(), "account_id": a1},
+    ).get_json()["id"]
+
+    bid = client.post(
+        "/api/bills",
+        headers=headers,
+        json={
+            "payee_name": "Water Co",
+            "bill_category": "Utilities",
+            "bill_date": date.today().isoformat(),
+            "due_date": (date.today() + timedelta(days=5)).isoformat(),
+            "account_id": a1,
+            "items": [{"item_name": "Water", "quantity": 1, "unit_price": "45.00"}],
+        },
+    ).get_json()["id"]
+
+    # Account filters & filtered totals
+    exp_f = client.get(f"/api/expenses?account_id={a1}").get_json()
+    assert exp_f["total"] == 1
+    assert exp_f["filtered_total"] == 12.5
+
+    inc_f = client.get(f"/api/income?account_id={a1}").get_json()
+    assert inc_f["total"] == 1
+    assert inc_f["filtered_total"] == 200.0
+
+    bill_f = client.get(f"/api/bills?account_id={a1}").get_json()
+    assert bill_f["total"] == 1
+    assert bill_f["filtered_total"] == 45.0
+    assert bill_f["filtered_balance"] == 45.0
+
+    # Income CSV export header and TOTAL row column alignment (9 columns)
+    csv_text = client.get("/api/income/export").get_data(as_text=True)
+    csv_rows = list(csv.reader(io.StringIO(csv_text)))
+    header_idx = next(i for i, r in enumerate(csv_rows) if r and r[0] == "ID")
+    assert len(csv_rows[header_idx]) == 9
+    assert csv_rows[-1][1] == "TOTAL"
+    assert len(csv_rows[-1]) == 9
+
+    # Goal combined allocation_pct <= 100%
+    g1 = client.post("/api/goals", headers=headers, json={"name": "Emergency", "target": "1000.00", "allocation_pct": 60})
+    assert g1.status_code == 200
+    g2 = client.post("/api/goals", headers=headers, json={"name": "Vacation", "target": "1000.00", "allocation_pct": 50})
+    assert g2.status_code == 400
+
+    # Double soft-delete returns 404
+    assert client.delete(f"/api/expenses/{eid}", headers=headers).status_code == 200
+    assert client.delete(f"/api/expenses/{eid}", headers=headers).status_code == 404
+    assert client.delete(f"/api/income/{iid}", headers=headers).status_code == 200
+    assert client.delete(f"/api/income/{iid}", headers=headers).status_code == 404
+    assert client.delete(f"/api/bills/{bid}", headers=headers).status_code == 200
+    assert client.delete(f"/api/bills/{bid}", headers=headers).status_code == 404
+
+
+def test_dashboard_budget_summary_and_forecast_and_recurring_due_offset(client):
+    token = login(client)
+    headers = auth_headers(token)
+    today_str = date.today().isoformat()
+
+    # Budget $100 for Groceries, and also a $40 sub-budget for Alex on Groceries.
+    # Unbudgeted Dining expense $50 should NOT inflate budgeted actuals.
+    client.post("/api/members", headers=headers, json={"name": "Alex"})
+    client.post("/api/budgets", headers=headers, json={"category": "Groceries", "period": "monthly", "amount": "100.00"})
+    client.post("/api/budgets", headers=headers, json={"category": "Groceries", "period": "monthly", "amount": "40.00", "member": "Alex"})
+    client.post("/api/expenses", headers=headers, json={"title": "Food", "category": "Groceries", "amount": "60.00", "expense_date": today_str, "member": "Alex"})
+    client.post("/api/expenses", headers=headers, json={"title": "Dinner", "category": "Dining Out", "amount": "50.00", "expense_date": today_str})
+
+    dash = client.get("/api/dashboard").get_json()
+    assert dash["budget_summary"]["monthly_budget"] == 100.0
+    assert dash["budget_summary"]["monthly_actual"] == 60.0
+    assert dash["budget_summary"]["monthly_remaining"] == 40.0
+
+    # Recurring bill rule with due_days_offset=10 and paused rule
+    r1 = client.post(
+        "/api/recurring",
+        headers=headers,
+        json={
+            "name": "Internet Bill Rule",
+            "entity_type": "bill",
+            "frequency": "monthly",
+            "interval_value": 1,
+            "next_run_date": today_str,
+            "is_active": True,
+            "payload": {
+                "payee_name": "Fiber ISP",
+                "bill_category": "Internet",
+                "due_days_offset": 10,
+                "items": [{"item_name": "Fiber", "quantity": 1, "unit_price": "70.00"}],
+            },
+        },
+    ).get_json()["id"]
+    assert r1 > 0
+    client.post(
+        "/api/recurring",
+        headers=headers,
+        json={
+            "name": "Paused Rule",
+            "entity_type": "expense",
+            "frequency": "monthly",
+            "interval_value": 1,
+            "next_run_date": today_str,
+            "is_active": False,
+            "payload": {"title": "Should Not Run", "amount": "9.00", "category": "Other"},
+        },
+    )
+    run_res = client.post("/api/recurring/run", headers=headers, json={}).get_json()
+    assert len(run_res["created"]) == 1
+    assert run_res["created"][0]["entity_type"] == "bill"
+    bill = client.get(f"/api/bills/{run_res['created'][0]['id']}").get_json()
+    assert bill["due_date"] == (date.today() + timedelta(days=10)).isoformat()
+    assert bill["items"][0]["unit_price"] == 70.0
+    assert client.post(f"/api/bills/{bill['id']}/pay", headers=headers, json={"amount": "20.00", "payment_date": today_str}).status_code == 200
+    bill_after = client.get(f"/api/bills/{bill['id']}").get_json()
+    assert bill_after["payments"][0]["amount"] == 20.0
+
+    # Forecast: future expenses must not skew 90-day lookback, recurring bills contribute to recurring_monthly_outflow,
+    # and unpaid current-month/horizon bills feed scheduled_bills
+    future_date = (date.today() + timedelta(days=45)).isoformat()
+    client.post("/api/expenses", headers=headers, json={"title": "Future Expense", "category": "Other", "amount": "9000.00", "expense_date": future_date})
+    fc = client.get("/api/reports/forecast?months=3").get_json()
+    assert fc["historical_monthly_expense"] < 500.0
+    assert fc["recurring_monthly_outflow"] == 70.0
+    assert fc["scheduled_bills_total"] >= 50.0
+    assert round(sum(p["scheduled_bills"] for p in fc["projection"]), 2) == fc["scheduled_bills_total"]
+
+
+def test_restore_upgrades_older_backup_schema(client, tmp_path):
+    token = login(client)
+    headers = auth_headers(token)
+
+    # Create a backup, strip the transfers table to simulate an older snapshot, and restore it
+    backup_bytes = client.get("/api/admin/backup").get_data()
+    old_db = tmp_path / "old_backup.db"
+    old_db.write_bytes(backup_bytes)
+    with sqlite3.connect(old_db) as c:
+        c.execute("DROP TABLE IF EXISTS transfers")
+        c.commit()
+
+    resp = client.post(
+        "/api/admin/restore",
+        headers=headers,
+        content_type="multipart/form-data",
+        data={"file": (io.BytesIO(old_db.read_bytes()), "old_backup.db")},
+    )
+    assert resp.status_code == 200
+
+    # Transfers endpoint should immediately work after restore because init_db() upgrades schema
+    assert client.get("/api/transfers").status_code == 200
